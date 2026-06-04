@@ -131,7 +131,7 @@ async def test_real_trade():
             
             spy_up_markets = [
                 m for m in active_markets 
-                if m.get("symbol") == "SPY" and m.get("up_token_id") and m.get("up_price", 0.0) >= 0.45
+                if m.get("symbol") == "SPY" and m.get("up_token_id") and 0.45 <= m.get("up_price", 0.0) < 0.95
             ]
             
             if spy_up_markets:
