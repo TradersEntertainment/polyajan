@@ -519,7 +519,7 @@ async def get_polymarket_usdc_balance() -> float:
         return 0.0
         
     url = "https://polygon-rpc.com/"
-    usdc_contract = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+    usdc_contract = "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb" # Polymarket USD (pUSD) contract address
     clean_address = wallet_address.lower().replace("0x", "")
     data = "0x70a08231" + clean_address.zfill(64)
     
