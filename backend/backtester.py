@@ -217,6 +217,7 @@ async def backtest_close_bet(symbol: str, current_price: float, ref_price: float
         return {"win_rate": 0.0, "total_similar_days": 0, "reversed_count": 0, "status": "no_data"}
 
     current_diff_pct = ((current_price - ref_price) / ref_price) * 100
+    current_direction = "UP" if current_diff_pct >= 0 else "DOWN"
     target_dir = direction.upper()
     abs_diff = abs(current_diff_pct)
 
@@ -229,7 +230,8 @@ async def backtest_close_bet(symbol: str, current_price: float, ref_price: float
     for day in days:
         best_match = None
         for snap in day["snapshots"]:
-            if snap["direction"] != target_dir:
+            # Match the historical snapshot direction to the ACTUAL current direction
+            if snap["direction"] != current_direction:
                 continue
             # Look for snapshots around the same minutes to close window (+/- 30 mins)
             if abs(snap["minutes_to_close"] - minutes_to_close) > 30:
@@ -241,11 +243,17 @@ async def backtest_close_bet(symbol: str, current_price: float, ref_price: float
             continue
 
         snap_abs = abs(best_match["diff_pct"])
-        reversed_flag = day["final_direction"] != target_dir
+        # Did it reverse from current_direction at close?
+        reversed_flag = day["final_direction"] != current_direction
+
+        # Did we win this contract?
+        # If target_dir == current_direction: we win if it did NOT reverse (continuation).
+        # If target_dir != current_direction: we win if it DID reverse (reversal).
+        is_win = (target_dir == current_direction and not reversed_flag) or (target_dir != current_direction and reversed_flag)
 
         entry = {
             "date": day["date"],
-            "reversed": reversed_flag
+            "is_win": is_win
         }
 
         # Check tolerance ranges
@@ -261,14 +269,12 @@ async def backtest_close_bet(symbol: str, current_price: float, ref_price: float
         sample_pool = similar
 
     total_similar = len(sample_pool)
-    reversed_count = sum(1 for e in sample_pool if e["reversed"])
-    win_count = total_similar - reversed_count
-
+    win_count = sum(1 for e in sample_pool if e["is_win"])
     win_rate = (win_count / total_similar * 100) if total_similar > 0 else 0.0
 
     return {
         "win_rate": win_rate,
         "total_similar_days": total_similar,
-        "reversed_count": reversed_count,
+        "win_count": win_count,
         "status": "success"
     }
