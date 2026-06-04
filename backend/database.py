@@ -489,7 +489,8 @@ async def get_polymarket_usdc_balance() -> float:
                 host="https://clob.polymarket.com",
                 key=private_key,
                 chain_id=137,
-                signature_type=sig_type
+                signature_type=sig_type,
+                funder=wallet_address
             )
             # Auto-derive L2 credentials if needed
             api_key = os.getenv("POLYMARKET_API_KEY")
@@ -551,6 +552,7 @@ async def get_polymarket_usdc_balance() -> float:
 async def place_polymarket_clob_order(token_id: str, price: float, size_usd: float, dry_run: bool = False) -> dict:
     """Places a taker buy order on Polymarket CLOB by matching the best ask price/size immediately in a loop."""
     private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
+    wallet_address = os.getenv("POLYMARKET_WALLET_ADDRESS")
     api_key = os.getenv("POLYMARKET_API_KEY")
     api_secret = os.getenv("POLYMARKET_API_SECRET")
     api_passphrase = os.getenv("POLYMARKET_API_PASSPHRASE")
@@ -567,13 +569,35 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
         try:
             from py_clob_client_v2.client import ClobClient
             
-            if auto_derive:
+            # If we have Relayer API credentials, configure the client to use them
+            relayer_api_key = os.getenv("RELAYER_API_KEY")
+            relayer_api_key_address = os.getenv("RELAYER_API_KEY_ADDRESS")
+            
+            if relayer_api_key and relayer_api_key_address:
+                logger.info(f"Using Relayer API key for authentication with relayer address: {relayer_api_key_address}")
+                # Pass credentials to ClobClient. Under the hood, py-clob-client-v2 will route trades via the Relayer endpoints.
+                from py_clob_client_v2.clob_types import ApiCreds
+                # Relayer auth doesn't require L2 ApiCreds in the same way, but let's initialize properly
+                client = ClobClient(
+                    host="https://clob.polymarket.com",
+                    key=private_key,
+                    chain_id=137,
+                    signature_type=sig_type,
+                    funder=wallet_address
+                )
+                # Apply relayer headers to the client session
+                client.session.headers.update({
+                    "RELAYER_API_KEY": relayer_api_key,
+                    "RELAYER_API_KEY_ADDRESS": relayer_api_key_address
+                })
+            elif auto_derive:
                 logger.info("Polymarket CLOB L2 API credentials not provided. Deriving them automatically from Private Key...")
                 client = ClobClient(
                     host="https://clob.polymarket.com",
                     key=private_key,
                     chain_id=137,
-                    signature_type=sig_type
+                    signature_type=sig_type,
+                    funder=wallet_address
                 )
                 client.set_api_creds(client.create_or_derive_api_key())
             else:
@@ -588,7 +612,8 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
                     key=private_key,
                     chain_id=137,
                     creds=creds,
-                    signature_type=sig_type
+                    signature_type=sig_type,
+                    funder=wallet_address
                 )
         except Exception as e:
             logger.error(f"Failed to initialize ClobClient: {e}")
