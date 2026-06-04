@@ -54,3 +54,17 @@ async def run_scan_now():
         return {"message": "Tarama başarıyla gerçekleştirildi."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/portfolio")
+async def get_portfolio_status():
+    try:
+        return await database.get_portfolio()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/trades/virtual")
+async def get_virtual_trades():
+    try:
+        return await database.get_virtual_trades()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

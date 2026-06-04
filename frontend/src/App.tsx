@@ -10,10 +10,11 @@ import {
   ChevronRight, 
   ChevronDown, 
   ExternalLink, 
-  FileText, 
   Sparkles, 
   Zap, 
-  Info
+  Info,
+  Briefcase,
+  History
 } from 'lucide-react';
 
 // API Configuration
@@ -53,11 +54,36 @@ interface AgentLog {
   created_at: string;
 }
 
+interface Portfolio {
+  balance: number;
+  equity: number;
+  open_positions_value: number;
+  risk_profile: string; // 'CONSERVATIVE', 'MODERATE', 'AGGRESSIVE'
+  risk_justification: string;
+}
+
+interface VirtualTrade {
+  id: number;
+  symbol: string;
+  direction: string;
+  ref_price: number;
+  entry_price: number;
+  size_usd: number;
+  shares: number;
+  status: string; // 'open', 'won', 'lost'
+  profit: number;
+  polymarket_slug: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
 function App() {
-  const [activeTab, setActiveTab] = useState<'signals' | 'tunings' | 'logs'>('signals');
+  const [activeTab, setActiveTab] = useState<'signals' | 'tunings' | 'logs' | 'portfolio'>('signals');
   const [signals, setSignals] = useState<Signal[]>([]);
   const [tunings, setTunings] = useState<Tuning[]>([]);
   const [logs, setLogs] = useState<AgentLog[]>([]);
+  const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
+  const [virtualTrades, setVirtualTrades] = useState<VirtualTrade[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
@@ -68,15 +94,19 @@ function App() {
   const fetchData = async () => {
     setIsLoading(true);
     try {
-      const [signalsRes, tuningsRes, logsRes] = await Promise.all([
+      const [signalsRes, tuningsRes, logsRes, portfolioRes, tradesRes] = await Promise.all([
         fetch(`${API_BASE}/api/signals`),
         fetch(`${API_BASE}/api/tunings`),
-        fetch(`${API_BASE}/api/logs`)
+        fetch(`${API_BASE}/api/logs`),
+        fetch(`${API_BASE}/api/portfolio`),
+        fetch(`${API_BASE}/api/trades/virtual`)
       ]);
 
       if (signalsRes.ok) setSignals(await signalsRes.json());
       if (tuningsRes.ok) setTunings(await tuningsRes.json());
       if (logsRes.ok) setLogs(await logsRes.json());
+      if (portfolioRes.ok) setPortfolio(await portfolioRes.json());
+      if (tradesRes.ok) setVirtualTrades(await tradesRes.json());
     } catch (error) {
       console.error("Error fetching data from backend API:", error);
     } finally {
@@ -173,6 +203,16 @@ function App() {
     l.log_type.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const resolvedTrades = virtualTrades.filter(t => t.status !== 'open');
+  const winCount = resolvedTrades.filter(t => t.status === 'won').length;
+  const winRate = resolvedTrades.length > 0 ? Math.round((winCount / resolvedTrades.length) * 100) : 0;
+
+  const filteredVirtualTrades = virtualTrades.filter(t => 
+    t.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    t.direction.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    t.status.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col font-sans selection:bg-purple-500/30 selection:text-purple-200">
       {/* Top Premium Navbar */}
@@ -249,44 +289,50 @@ function App() {
           <div className="bg-neutral-900/40 border border-neutral-800/80 rounded-2xl p-5 relative overflow-hidden backdrop-blur-sm group hover:border-neutral-700/50 transition">
             <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-600/5 rounded-full blur-2xl group-hover:bg-indigo-600/10 transition duration-300"></div>
             <div className="flex items-center justify-between mb-3">
-              <span className="text-neutral-400 text-sm font-medium">Ajan Durumu</span>
-              <div className="p-2 bg-indigo-500/10 text-indigo-400 rounded-lg"><Brain size={16} /></div>
+              <span className="text-neutral-400 text-sm font-medium">Portföy Değeri (Net)</span>
+              <div className="p-2 bg-indigo-500/10 text-indigo-400 rounded-lg"><Briefcase size={16} /></div>
             </div>
-            <div className="text-lg font-bold text-white leading-normal truncate">Llama 3.3 (Groq)</div>
+            <div className="text-3xl font-extrabold text-white tracking-tight">
+              ${portfolio ? portfolio.equity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '1,000.00'}
+            </div>
             <p className="text-xs text-indigo-400 mt-2 flex items-center gap-1 font-medium">
-              <span>●</span> Parametreleri optimize ediyor
+              <span>●</span> Nakit: ${portfolio ? portfolio.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '1,000.00'}
             </p>
           </div>
 
           <div className="bg-neutral-900/40 border border-neutral-800/80 rounded-2xl p-5 relative overflow-hidden backdrop-blur-sm group hover:border-neutral-700/50 transition">
             <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-600/5 rounded-full blur-2xl group-hover:bg-emerald-600/10 transition duration-300"></div>
             <div className="flex items-center justify-between mb-3">
-              <span className="text-neutral-400 text-sm font-medium">Optimize Edilen Varlıklar</span>
-              <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg"><Sliders size={16} /></div>
+              <span className="text-neutral-400 text-sm font-medium">AI Risk Stansı</span>
+              <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg"><Brain size={16} /></div>
             </div>
-            <div className="text-3xl font-extrabold text-white tracking-tight">{Math.round(tunings.length / 2)}</div>
-            <p className="text-xs text-neutral-400 mt-2 flex items-center gap-1">
-              <span>●</span> {tunings.length} Toplam Metrik Modeli
+            <div className="text-2xl font-bold text-white tracking-tight uppercase">
+              {portfolio ? portfolio.risk_profile : 'MODERATE'}
+            </div>
+            <p className="text-xs text-neutral-400 mt-2 truncate">
+              {portfolio ? portfolio.risk_justification : 'Başlangıç dengeli mod.'}
             </p>
           </div>
 
           <div className="bg-neutral-900/40 border border-neutral-800/80 rounded-2xl p-5 relative overflow-hidden backdrop-blur-sm group hover:border-neutral-700/50 transition">
             <div className="absolute top-0 right-0 w-24 h-24 bg-amber-600/5 rounded-full blur-2xl group-hover:bg-amber-600/10 transition duration-300"></div>
             <div className="flex items-center justify-between mb-3">
-              <span className="text-neutral-400 text-sm font-medium">İşlem Günlükleri</span>
-              <div className="p-2 bg-amber-500/10 text-amber-400 rounded-lg"><FileText size={16} /></div>
+              <span className="text-neutral-400 text-sm font-medium">Sanal Başarı Oranı</span>
+              <div className="p-2 bg-amber-500/10 text-amber-400 rounded-lg"><History size={16} /></div>
             </div>
-            <div className="text-3xl font-extrabold text-white tracking-tight">{logs.length}</div>
-            <p className="text-xs text-neutral-400 mt-2">LLM Kararları ve Taramaları</p>
+            <div className="text-3xl font-extrabold text-white tracking-tight">%{winRate}</div>
+            <p className="text-xs text-neutral-400 mt-2">
+              Toplam {virtualTrades.length} İşlem / {resolvedTrades.length} Sonuçlanan
+            </p>
           </div>
         </section>
 
         {/* Tab Controls and Search */}
         <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-4 mb-6 border-b border-neutral-800/60 pb-5">
-          <div className="flex p-1 bg-neutral-900 border border-neutral-800 rounded-xl max-w-md w-full sm:w-auto">
+          <div className="flex p-1 bg-neutral-900 border border-neutral-800 rounded-xl max-w-md w-full sm:w-auto overflow-x-auto">
             <button
               onClick={() => setActiveTab('signals')}
-              className={`flex-1 sm:flex-none px-5 py-2 rounded-lg text-sm font-medium transition duration-200 flex items-center justify-center gap-2 ${
+              className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-sm font-medium transition duration-200 flex items-center justify-center gap-2 whitespace-nowrap ${
                 activeTab === 'signals'
                   ? 'bg-neutral-800 text-white shadow-md'
                   : 'text-neutral-400 hover:text-neutral-200'
@@ -296,8 +342,19 @@ function App() {
               Fırsat Sinyalleri
             </button>
             <button
+              onClick={() => setActiveTab('portfolio')}
+              className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-sm font-medium transition duration-200 flex items-center justify-center gap-2 whitespace-nowrap ${
+                activeTab === 'portfolio'
+                  ? 'bg-neutral-800 text-white shadow-md'
+                  : 'text-neutral-400 hover:text-neutral-200'
+              }`}
+            >
+              <Briefcase size={14} />
+              Sanal Portföy
+            </button>
+            <button
               onClick={() => setActiveTab('tunings')}
-              className={`flex-1 sm:flex-none px-5 py-2 rounded-lg text-sm font-medium transition duration-200 flex items-center justify-center gap-2 ${
+              className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-sm font-medium transition duration-200 flex items-center justify-center gap-2 whitespace-nowrap ${
                 activeTab === 'tunings'
                   ? 'bg-neutral-800 text-white shadow-md'
                   : 'text-neutral-400 hover:text-neutral-200'
@@ -308,7 +365,7 @@ function App() {
             </button>
             <button
               onClick={() => setActiveTab('logs')}
-              className={`flex-1 sm:flex-none px-5 py-2 rounded-lg text-sm font-medium transition duration-200 flex items-center justify-center gap-2 ${
+              className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-sm font-medium transition duration-200 flex items-center justify-center gap-2 whitespace-nowrap ${
                 activeTab === 'logs'
                   ? 'bg-neutral-800 text-white shadow-md'
                   : 'text-neutral-400 hover:text-neutral-200'
@@ -516,6 +573,173 @@ function App() {
                       )}
                     </tbody>
                   </table>
+                </div>
+              </div>
+            )}
+
+            {/* Tab: Portfolio */}
+            {activeTab === 'portfolio' && (
+              <div className="space-y-6">
+                
+                {/* Risk Profile & Justification card */}
+                <div className="bg-gradient-to-tr from-neutral-900/60 to-purple-950/10 border border-purple-500/20 rounded-2xl p-6 relative overflow-hidden backdrop-blur-sm shadow-md">
+                  <div className="absolute top-0 right-0 w-36 h-36 bg-purple-500/5 rounded-full blur-3xl"></div>
+                  <div className="flex items-start gap-4">
+                    <div className="p-3 bg-purple-500/10 text-purple-400 rounded-xl border border-purple-500/20">
+                      <Brain size={24} className="animate-pulse" />
+                    </div>
+                    <div className="space-y-2 text-left">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-base font-bold text-white">Aktif Risk Profili:</h3>
+                        <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
+                          portfolio?.risk_profile === 'CONSERVATIVE'
+                            ? 'bg-blue-500/10 text-blue-400 border border-blue-500/35'
+                            : portfolio?.risk_profile === 'AGGRESSIVE'
+                              ? 'bg-rose-500/10 text-rose-400 border border-rose-500/35'
+                              : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/35'
+                        }`}>
+                          {portfolio ? portfolio.risk_profile : 'MODERATE'}
+                        </span>
+                      </div>
+                      <p className="text-sm text-neutral-300 leading-relaxed italic">
+                        "{portfolio ? portfolio.risk_justification : 'Veriler yükleniyor...'}"
+                      </p>
+                      <p className="text-xs text-neutral-500">
+                        * Ajan son işlemlerin başarı oranını ve kâr/zarar durumunu inceleyerek bu risk stansını otonom olarak ayarlar.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Open Positions Grid */}
+                <div className="bg-neutral-900/40 border border-neutral-850 rounded-2xl p-5 backdrop-blur-sm">
+                  <h3 className="text-base font-bold text-white mb-4 flex items-center gap-2">
+                    <Zap size={16} className="text-indigo-400" />
+                    Açık Sanal Pozisyonlar ({filteredVirtualTrades.filter(t => t.status === 'open').length})
+                  </h3>
+
+                  {filteredVirtualTrades.filter(t => t.status === 'open').length === 0 ? (
+                    <p className="text-sm text-neutral-500 py-6 text-center">Aktif açık pozisyon bulunmamaktadır.</p>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {filteredVirtualTrades.filter(t => t.status === 'open').map((trade) => {
+                        // Find live price from signals if available
+                        const sig = signals.find(s => s.symbol === trade.symbol && s.direction === trade.direction && s.status === 'active');
+                        const livePrice = sig?.polymarket_price ?? trade.entry_price;
+                        const currentValue = trade.shares * livePrice;
+                        const uPnL = currentValue - trade.size_usd;
+
+                        return (
+                          <div key={trade.id} className="bg-neutral-950/40 border border-neutral-800 rounded-xl p-4 flex flex-col justify-between hover:border-neutral-700 transition text-left">
+                            <div className="flex items-center justify-between mb-3">
+                              <span className="font-bold text-white text-base">{trade.symbol}</span>
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                trade.direction.includes('UP') 
+                                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                                  : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                              }`}>
+                                {trade.direction}
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3 text-xs border-b border-neutral-850 pb-3 mb-3">
+                              <div>
+                                <span className="text-neutral-500 block">Giriş Fiyatı:</span>
+                                <span className="font-mono text-neutral-300">${trade.entry_price.toFixed(2)} ({Math.round(trade.entry_price * 100)}¢)</span>
+                              </div>
+                              <div>
+                                <span className="text-neutral-500 block">Adet (Pay):</span>
+                                <span className="font-mono text-neutral-300">{trade.shares.toFixed(2)} Pay</span>
+                              </div>
+                              <div>
+                                <span className="text-neutral-500 block">Yatırım Tutarı:</span>
+                                <span className="font-mono text-neutral-300">${trade.size_usd.toFixed(2)}</span>
+                              </div>
+                              <div>
+                                <span className="text-neutral-500 block">Mevcut Değer:</span>
+                                <span className="font-mono text-neutral-300">${currentValue.toFixed(2)}</span>
+                              </div>
+                            </div>
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-neutral-400 font-mono text-[10px]">{formatDate(trade.created_at)}</span>
+                              <div className="flex items-center gap-1">
+                                <span className="text-neutral-500">Kâr/Zarar:</span>
+                                <span className={`font-mono font-bold ${uPnL >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                  {uPnL >= 0 ? '+' : ''}${uPnL.toFixed(2)}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Closed Positions History */}
+                <div className="bg-neutral-900/40 border border-neutral-850 rounded-2xl overflow-hidden backdrop-blur-sm">
+                  <div className="p-5 border-b border-neutral-800 flex justify-between items-center">
+                    <h3 className="text-base font-bold text-white flex items-center gap-2">
+                      <History size={16} className="text-amber-400" />
+                      Sonuçlanan Sanal İşlemler ({filteredVirtualTrades.filter(t => t.status !== 'open').length})
+                    </h3>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-neutral-800 text-neutral-400 text-xs font-semibold uppercase bg-neutral-950/40">
+                          <th className="py-4 px-6">Varlık</th>
+                          <th className="py-4 px-6">Yön</th>
+                          <th className="py-4 px-6">Yatırım</th>
+                          <th className="py-4 px-6">Giriş</th>
+                          <th className="py-4 px-6">Durum</th>
+                          <th className="py-4 px-6">Kâr/Zarar</th>
+                          <th className="py-4 px-6 text-right">Tarih</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-neutral-800/60 text-sm">
+                        {filteredVirtualTrades.filter(t => t.status !== 'open').length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="py-8 px-6 text-center text-neutral-500">
+                              Sonuçlanan sanal işlem geçmişi bulunmamaktadır.
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredVirtualTrades.filter(t => t.status !== 'open').map((trade, idx) => (
+                            <tr key={idx} className="hover:bg-neutral-900/25 transition">
+                              <td className="py-3.5 px-6 font-bold text-white">{trade.symbol}</td>
+                              <td className="py-3.5 px-6">
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                  trade.direction.includes('UP') 
+                                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                                    : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                                }`}>
+                                  {trade.direction}
+                                </span>
+                              </td>
+                              <td className="py-3.5 px-6 font-mono text-neutral-300">${trade.size_usd.toFixed(1)}</td>
+                              <td className="py-3.5 px-6 font-mono text-neutral-400">${trade.entry_price.toFixed(2)}</td>
+                              <td className="py-3.5 px-6">
+                                <span className={`px-2.5 py-1 rounded text-xs font-bold uppercase ${
+                                  trade.status === 'won' 
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
+                                    : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                }`}>
+                                  {trade.status === 'won' ? 'KAZANDI' : 'KAYBETTİ'}
+                                </span>
+                              </td>
+                              <td className={`py-3.5 px-6 font-mono font-bold ${trade.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {trade.profit >= 0 ? '+' : ''}${trade.profit.toFixed(2)}
+                              </td>
+                              <td className="py-3.5 px-6 text-right text-neutral-400 text-xs font-mono">
+                                {trade.resolved_at ? formatDate(trade.resolved_at) : formatDate(trade.created_at)}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
             )}
