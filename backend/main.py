@@ -183,7 +183,8 @@ async def get_virtual_trades():
                             book = resp.json()
                             bids = book.get("bids", [])
                             if bids:
-                                t["current_price"] = float(bids[0]["price"])
+                                bids_sorted = sorted(bids, key=lambda x: float(x.get("price", 0)), reverse=True)
+                                t["current_price"] = float(bids_sorted[0]["price"])
                 except Exception:
                     pass
                     

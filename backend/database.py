@@ -278,7 +278,8 @@ async def get_portfolio() -> dict:
                         book = resp.json()
                         bids = book.get("bids", [])
                         if bids:
-                            return float(bids[0]["price"])
+                            bids_sorted = sorted(bids, key=lambda x: float(x.get("price", 0)), reverse=True)
+                            return float(bids_sorted[0]["price"])
             except Exception:
                 pass
             return None
@@ -615,6 +616,7 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
                     break
                 book = resp.json()
                 asks = book.get("asks", [])
+                asks = sorted(asks, key=lambda x: float(x.get("price") if isinstance(x, dict) else getattr(x, "price")))
         except Exception as ob_err:
             logger.error(f"Failed to query orderbook depth on attempt {attempt}: {ob_err}")
             break
