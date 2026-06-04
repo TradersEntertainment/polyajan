@@ -446,17 +446,28 @@ async def run_autonomous_scan_cycle():
         # Strict user constraint: en kötü garanti %1 bulsun
         required_edge_threshold = 0.01
         trade_size_usd = max(2.0, total_capital * 0.10) # default baseline size, but sequentially managed
+        
+        # Enforce minimum win probability for real funds to avoid low-prob lottery bets
+        if risk_profile == "CONSERVATIVE":
+            min_win_prob = 0.70
+        elif risk_profile == "AGGRESSIVE":
+            min_win_prob = 0.55
+        else: # MODERATE
+            min_win_prob = 0.60
     else:
         # Standard sizing for Virtual account ($1000 budget)
         if risk_profile == "CONSERVATIVE":
             required_edge_threshold = 0.15
             trade_size_usd = 50.0
+            min_win_prob = 0.65
         elif risk_profile == "AGGRESSIVE":
             required_edge_threshold = 0.08
             trade_size_usd = 150.0
+            min_win_prob = 0.50
         else: # MODERATE
             required_edge_threshold = 0.12
             trade_size_usd = 100.0
+            min_win_prob = 0.55
  
     # 4. Fetch active Polymarket markets
     markets = await fetch_active_polymarket_markets()
@@ -522,7 +533,8 @@ async def run_autonomous_scan_cycle():
             # Filter: We look for opportunities where:
             # - Real quant probability of winning is high (e.g. >= 85%) AND expected yield meets the minimum yield
             # - OR there is a significant pricing edge (e.g. real probability is X% higher than Polymarket price)
-            is_significant_edge = edge >= required_edge_threshold
+            # - AND the absolute win probability is at least min_win_prob to avoid low-probability lottery bets
+            is_significant_edge = (edge >= required_edge_threshold) and (quant_prob >= min_win_prob)
             is_high_prob_yield = (quant_prob >= 0.88) and (expected_yield >= min_yield)
             
             if is_significant_edge or is_high_prob_yield:
