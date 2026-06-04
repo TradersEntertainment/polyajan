@@ -144,6 +144,23 @@ async def test_real_trade():
             # Fallback to defaults
             pass
             
+        # Fetch the actual best ask from the orderbook to align price_limit and avoid mismatch rejections
+        try:
+            import httpx
+            book_url = f"https://clob.polymarket.com/book?token_id={token_id}"
+            async with httpx.AsyncClient() as hc:
+                book_resp = await hc.get(book_url, timeout=6.0)
+                if book_resp.status_code == 200:
+                    book_data = book_resp.json()
+                    asks = book_data.get("asks", [])
+                    if asks:
+                        asks_sorted = sorted(asks, key=lambda x: float(x.get("price") if isinstance(x, dict) else getattr(x, "price")))
+                        best_ask_price = float(asks_sorted[0]["price"] if isinstance(asks_sorted[0], dict) else getattr(asks_sorted[0], "price"))
+                        price_limit = best_ask_price
+                        market_title = f"{market_title} (Orderbook Price Aligned to ${price_limit:.2f})"
+        except Exception as p_err:
+            pass
+
         size_usd = 5.0
         res = await database.place_polymarket_clob_order(
             token_id=token_id,
