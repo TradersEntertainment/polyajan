@@ -254,9 +254,11 @@ async def get_portfolio() -> dict:
         }
 
 async def update_balance(amount: float):
+    from datetime import datetime
+    now_str = datetime.now().isoformat()
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("UPDATE virtual_portfolio SET balance = balance + $1, updated_at = NOW() WHERE id = 1", amount)
+        await conn.execute("UPDATE virtual_portfolio SET balance = balance + $1, updated_at = $2 WHERE id = 1", amount, now_str)
 
 async def get_risk_profile() -> str:
     pool = await get_pool()
