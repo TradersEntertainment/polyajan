@@ -569,28 +569,22 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
         try:
             from py_clob_client_v2.client import ClobClient
             
-            # If we have Relayer API credentials, configure the client to use them
-            relayer_api_key = os.getenv("RELAYER_API_KEY")
-            relayer_api_key_address = os.getenv("RELAYER_API_KEY_ADDRESS")
+            # MONKEY PATCH: Force SDK L1 Headers to use Deposit Wallet address (wallet_address)
+            # instead of EOA address, so the API key binds directly to the deposit wallet.
+            import py_clob_client_v2.headers.headers as sdk_headers
+            original_create_level_1_headers = sdk_headers.create_level_1_headers
             
-            if relayer_api_key and relayer_api_key_address:
-                logger.info(f"Using Relayer API key for authentication with relayer address: {relayer_api_key_address}")
-                # Pass credentials to ClobClient. Under the hood, py-clob-client-v2 will route trades via the Relayer endpoints.
-                from py_clob_client_v2.clob_types import ApiCreds
-                # Relayer auth doesn't require L2 ApiCreds in the same way, but let's initialize properly
-                client = ClobClient(
-                    host="https://clob.polymarket.com",
-                    key=private_key,
-                    chain_id=137,
-                    signature_type=sig_type,
-                    funder=wallet_address
-                )
-                # Apply relayer headers to the client session
-                client.session.headers.update({
-                    "RELAYER_API_KEY": relayer_api_key,
-                    "RELAYER_API_KEY_ADDRESS": relayer_api_key_address
-                })
-            elif auto_derive:
+            def patched_create_level_1_headers(signer, timestamp, nonce=0, custom_address=None):
+                # Call original but pass the deposit wallet (funder) address as the signer address
+                headers = original_create_level_1_headers(signer, timestamp, nonce)
+                # Override the address in the L1 headers with the deposit wallet address
+                headers["POLY_ADDRESS"] = wallet_address
+                logger.info(f"Monkey patched L1 headers POLY_ADDRESS to deposit wallet: {wallet_address}")
+                return headers
+                
+            sdk_headers.create_level_1_headers = patched_create_level_1_headers
+            
+            if auto_derive:
                 logger.info("Polymarket CLOB L2 API credentials not provided. Deriving them automatically from Private Key...")
                 client = ClobClient(
                     host="https://clob.polymarket.com",
