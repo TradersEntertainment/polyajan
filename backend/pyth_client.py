@@ -303,22 +303,42 @@ async def get_historical_candle_price(full_symbol: str, pyth_id: str, from_ts: i
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(url, params=params, timeout=10.0)
-            resp.raise_for_status()
-            data = resp.json()
+            if resp.status_code == 200:
+                data = resp.json()
+                target_key = "c" if price_type == 'close' else "o"
+                if data.get("s") == "ok" and target_key in data and len(data[target_key]) > 0:
+                    price = data[target_key][-1] if price_type == 'close' else data[target_key][0]
+                    res_price = float(price)
+                    _historical_price_cache[cache_key] = res_price
+                    return res_price
             
-            # TV API response: { "s": "ok", "t": [...], "c": [...], "o": [...] }
-            target_key = "c" if price_type == 'close' else "o"
-            
-            if data.get("s") == "ok" and target_key in data and len(data[target_key]) > 0:
-                price = data[target_key][-1] if price_type == 'close' else data[target_key][0]
-                res_price = float(price)
-                _historical_price_cache[cache_key] = res_price
-                return res_price
-            else:
-                logger.warning(f"No TV candle data found for {full_symbol} between {from_ts} and {to_ts}. Response: {data.get('s')}. Falling back to Hermes history API...")
+            # If status code is not 200 or data is missing, run Hermes fallback
+            logger.warning(f"No TV candle data found for {full_symbol} (status {resp.status_code}). Falling back to Hermes history API...")
+            clean_id = pyth_id if not pyth_id.startswith('0x') else pyth_id[2:]
+            target_ts = to_ts if price_type == 'close' else from_ts
+            fallback_url = f"{HERMES_URL}/updates/price/{target_ts}"
+            fb_params = {"ids[]": clean_id, "parsed": "true"}
+            fb_resp = await client.get(fallback_url, params=fb_params, timeout=5.0)
+            if fb_resp.status_code == 200:
+                fb_data = fb_resp.json()
+                for item in fb_data.get("parsed", []):
+                    if clean_id in item.get("id", ""):
+                        price_info = item.get("price", {})
+                        p_str = price_info.get("price")
+                        e_str = price_info.get("expo")
+                        if p_str and e_str:
+                            res_price = float(p_str) * (10 ** int(e_str))
+                            _historical_price_cache[cache_key] = res_price
+                            return res_price
+                            
+            logger.error(f"Fallback to Hermes History failed for {full_symbol} at {target_ts}")
+            return None
+                
+    except Exception as e:
+        logger.error(f"Error fetching historical TV candle: {e}. Attempting emergency Hermes fallback...")
+        try:
+            async with httpx.AsyncClient() as client:
                 clean_id = pyth_id if not pyth_id.startswith('0x') else pyth_id[2:]
-                # If we want close, we want the price at the end of the minute (to_ts)
-                # If we want open, we want the price at the start of the minute (from_ts)
                 target_ts = to_ts if price_type == 'close' else from_ts
                 fallback_url = f"{HERMES_URL}/updates/price/{target_ts}"
                 fb_params = {"ids[]": clean_id, "parsed": "true"}
@@ -334,12 +354,8 @@ async def get_historical_candle_price(full_symbol: str, pyth_id: str, from_ts: i
                                 res_price = float(p_str) * (10 ** int(e_str))
                                 _historical_price_cache[cache_key] = res_price
                                 return res_price
-                                
-                logger.error(f"Fallback to Hermes History failed for {full_symbol} at {target_ts}")
-                return None
-                
-    except Exception as e:
-        logger.error(f"Error fetching historical TV candle: {e}")
+        except Exception as fb_err:
+            logger.error(f"Emergency Hermes fallback failed: {fb_err}")
         return None
 
 async def get_latest_price(pyth_id: str) -> float:
