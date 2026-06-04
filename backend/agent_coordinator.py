@@ -20,6 +20,25 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+async def send_telegram_message(message: str):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        logger.warning("Telegram notification skipped: TELEGRAM_TOKEN or CHAT_ID not configured.")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, json=payload, timeout=8.0)
+            if resp.status_code != 200:
+                logger.error(f"Failed to send Telegram message: status {resp.status_code}, response: {resp.text}")
+    except Exception as e:
+        logger.error(f"Error sending Telegram notification: {e}")
+
 GAMMA_API = "https://gamma-api.polymarket.com"
 
 # Symbols we monitor
@@ -562,6 +581,18 @@ async def resolve_virtual_trades():
                 payout = 1.0 if is_win else 0.0
                 
                 await database.resolve_virtual_trade(trade_id, status, payout)
+                try:
+                    trading_mode = os.getenv("TRADING_MODE", "VIRTUAL").upper()
+                    msg = (
+                        f"🏁 <b>[İŞLEM SONUÇLANDI ({trading_mode})]</b>\n\n"
+                        f"<b>Enstrüman:</b> {symbol}\n"
+                        f"<b>Yön:</b> {direction}\n"
+                        f"<b>Sonuç:</b> {status.upper()} {'✅' if status == 'won' else '❌'}\n"
+                        f"<b>Açılış:</b> ${open_price:.2f} (Referans: ${ref_price:.2f})"
+                    )
+                    await send_telegram_message(msg)
+                except Exception as tg_err:
+                    logger.error(f"Telegram resolve notification failed: {tg_err}")
                 
                 summary = f"Sanal Islem Cozuldu: {symbol} {direction} -> {status.upper()} (Acilis: ${open_price:.2f} vs Ref: ${ref_price:.2f})"
                 await database.add_agent_log(
@@ -612,6 +643,18 @@ async def resolve_virtual_trades():
                 
                 await database.resolve_virtual_trade(trade_id, status, payout)
                 resolved_any = True
+                try:
+                    trading_mode = os.getenv("TRADING_MODE", "VIRTUAL").upper()
+                    msg = (
+                        f"🏁 <b>[İŞLEM SONUÇLANDI ({trading_mode})]</b>\n\n"
+                        f"<b>Enstrüman:</b> {symbol}\n"
+                        f"<b>Yön:</b> {direction}\n"
+                        f"<b>Sonuç:</b> {status.upper()} {'✅' if status == 'won' else '❌'}\n"
+                        f"<b>Kapanış:</b> ${close_price:.2f} (Referans: ${ref_price:.2f})"
+                    )
+                    await send_telegram_message(msg)
+                except Exception as tg_err:
+                    logger.error(f"Telegram resolve notification failed: {tg_err}")
                 
                 summary = f"Sanal Islem Cozuldu: {symbol} {direction} -> {status.upper()} (Kapanis: ${close_price:.2f} vs Ref: ${ref_price:.2f})"
                 await database.add_agent_log(
@@ -855,6 +898,19 @@ async def run_autonomous_scan_cycle():
                                 f"Risk Profili: {risk_profile}. Referans Fiyat: ${cand['ref_price']:.2f}."
                             )
                             logger.info(f"AI Agent: Real trade opened: {cand['symbol']} {cand['direction']} (Size: ${spent:.2f}, Lottery: {is_lottery})")
+                            try:
+                                msg = (
+                                    f"🔔 <b>[GERÇEK İŞLEM AÇILDI]</b>\n\n"
+                                    f"<b>Enstrüman:</b> {cand['symbol']}\n"
+                                    f"<b>Yön:</b> {cand['direction']}{' (Lottery Capped)' if is_lottery else ''}\n"
+                                    f"<b>Büyüklük:</b> ${spent:.2f}\n"
+                                    f"<b>Giriş Fiyatı:</b> ${cand['entry_price']:.2f}\n"
+                                    f"<b>Kazanma İhtimali:</b> {cand['quant_probability'] * 100:.1f}%\n"
+                                    f"<b>Piyasa:</b> {cand['slug']}"
+                                )
+                                await send_telegram_message(msg)
+                            except Exception as tg_err:
+                                logger.error(f"Telegram real trade open notification failed: {tg_err}")
         else:
             # Virtual trading mode logic (uses standard trade_size_usd per trade, but caps at remaining balance)
             for cand in new_candidates:
@@ -886,9 +942,65 @@ async def run_autonomous_scan_cycle():
                         f"Risk Profili: {risk_profile}. Referans Fiyat: ${cand['ref_price']:.2f}."
                     )
                     logger.info(f"AI Agent: Virtual trade opened: {cand['symbol']} {cand['direction']} (Size: ${spent:.2f})")
+                    try:
+                        msg = (
+                            f"🧪 <b>[SANAL İŞLEM AÇILDI]</b>\n\n"
+                            f"<b>Enstrüman:</b> {cand['symbol']}\n"
+                            f"<b>Yön:</b> {cand['direction']}\n"
+                            f"<b>Büyüklük:</b> ${spent:.2f}\n"
+                            f"<b>Giriş Fiyatı:</b> ${cand['entry_price']:.2f}\n"
+                            f"<b>Kazanma İhtimali:</b> {cand['quant_probability'] * 100:.1f}%\n"
+                            f"<b>Piyasa:</b> {cand['slug']}"
+                        )
+                        await send_telegram_message(msg)
+                    except Exception as tg_err:
+                        logger.error(f"Telegram virtual trade open notification failed: {tg_err}")
                         
     # Record portfolio value after scan cycle completes
     await database.record_portfolio_history()
+    
+    # Daily Balance Update via Telegram (Turkey Time)
+    try:
+        tr_tz = pytz.timezone("Europe/Istanbul")
+        now_tr = datetime.now(tr_tz)
+        today_str = now_tr.strftime("%Y-%m-%d")
+        
+        # Check at 23:50 - 23:59 Turkey Time
+        if now_tr.hour == 23 and now_tr.minute >= 50:
+            last_sent = await database.get_setting("last_telegram_daily_report_date")
+            if last_sent != today_str:
+                port = await database.get_portfolio()
+                balance = port["balance"]
+                equity = port["equity"]
+                
+                open_trades = await database.get_open_virtual_trades()
+                open_count = len(open_trades)
+                
+                pool = await database.get_pool()
+                async with pool.acquire() as conn:
+                    resolved_today = await conn.fetch(
+                        "SELECT status, profit FROM virtual_trades WHERE status IN ('won', 'lost') AND resolved_at LIKE $1",
+                        f"{today_str}%"
+                    )
+                
+                total_wins = sum(1 for r in resolved_today if r["status"] == "won")
+                total_losses = sum(1 for r in resolved_today if r["status"] == "lost")
+                total_profit = sum(float(r["profit"]) for r in resolved_today)
+                
+                msg = (
+                    f"📊 <b>[GÜNLÜK HESAP ÖZETİ - {today_str}]</b>\n\n"
+                    f"<b>Mod:</b> {trading_mode}\n"
+                    f"<b>Net Varlık (Equity):</b> ${equity:.2f}\n"
+                    f"<b>Boştaki Bakiye (Balance):</b> ${balance:.2f}\n\n"
+                    f"<b>Aktif Açık İşlemler:</b> {open_count} adet\n"
+                    f"<b>Bugün Kapatılan İşlemler:</b> {len(resolved_today)} adet "
+                    f"(✅ {total_wins} / ❌ {total_losses})\n"
+                    f"<b>Bugünkü Kar/Zarar:</b> ${total_profit:+.2f}"
+                )
+                await send_telegram_message(msg)
+                await database.update_setting("last_telegram_daily_report_date", today_str)
+    except Exception as eod_err:
+        logger.error(f"Error executing daily Telegram summary: {eod_err}")
 
 async def agent_scheduler_loop():
     """Background task runner for the AI Agent."""
