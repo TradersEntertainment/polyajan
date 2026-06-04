@@ -667,22 +667,25 @@ async def agent_scheduler_loop():
     
     while True:
         try:
-            # 1. Run portfolio-wide risk profile assessment
+            # 1. Run signal scan loop immediately to resolve open trades and find new signals
+            await run_autonomous_scan_cycle()
+            
+            # 2. Run portfolio-wide risk profile assessment
             await run_portfolio_risk_agent()
             await asyncio.sleep(2.0)
             
-            # 2. Run parameter tuning loop for all assets (once every 4 hours)
+            # 3. Run parameter tuning loop for all assets (once every 4 hours)
             # Run sequentially to respect API rate limits
             for symbol in WATCHLIST:
                 for bt in ["open", "close"]:
                     await run_parameter_tuning_agent(symbol, bt)
                     await asyncio.sleep(2.0) # rate-limiting cushion
             
-            # 3. Run signal scan loop (every 5 minutes during trading windows)
-            # Run scan 48 times per tuning cycle (approx 4 hours)
-            for _ in range(48):
-                await run_autonomous_scan_cycle()
+            # 4. Continue running scan loop for the rest of the 4 hours
+            # Run scan 47 more times (approx 4 hours)
+            for _ in range(47):
                 await asyncio.sleep(300)
+                await run_autonomous_scan_cycle()
 
         except Exception as e:
             logger.error(f"Error in agent scheduler: {e}")
