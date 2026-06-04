@@ -84,8 +84,30 @@ async def test_clob_connection():
                 host="https://clob.polymarket.com",
                 key=private_key,
                 chain_id=137,
-                signature_type=sig_type
+                signature_type=sig_type,
+                funder=wallet_address
             )
+            
+            # Diagnostic inspection
+            attrs = {}
+            for attr in dir(client):
+                if not attr.startswith("_"):
+                    try:
+                        attrs[attr] = str(type(getattr(client, attr)))
+                    except:
+                        pass
+                        
+            # If client.client exists, inspect it too
+            client_attrs = {}
+            if hasattr(client, "client"):
+                sub_client = getattr(client, "client")
+                for attr in dir(sub_client):
+                    if not attr.startswith("_"):
+                        try:
+                            client_attrs[attr] = str(type(getattr(sub_client, attr)))
+                        except:
+                            pass
+            
             creds = client.create_or_derive_api_key()
             client.set_api_creds(creds)
             
@@ -95,7 +117,9 @@ async def test_clob_connection():
                 "usdc_balance_rpc": rpc_balance,
                 "clob_authentication": "successful",
                 "derived_api_key": creds.api_key if hasattr(creds, 'api_key') else getattr(creds, 'key', 'derived'),
-                "message": "Polymarket CLOB API connection is fully working and authenticated!"
+                "message": "Polymarket CLOB API connection is fully working and authenticated!",
+                "debug_clob_client_attributes": attrs,
+                "debug_sub_client_attributes": client_attrs
             }
         except Exception as clob_err:
             return {
