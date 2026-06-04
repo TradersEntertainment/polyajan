@@ -474,18 +474,47 @@ async def record_portfolio_history():
         )
 
 async def get_polymarket_usdc_balance() -> float:
-    """Fetches live USDC balance of the connected wallet address from Polygon RPC."""
+    """Fetches live USDC balance of the connected wallet address from Polymarket CLOB (or Polygon RPC fallback)."""
+    private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
     wallet_address = os.getenv("POLYMARKET_WALLET_ADDRESS")
-    if not wallet_address:
+    sig_type = int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "1"))
+    
+    if private_key:
         try:
-            from eth_account import Account
-            private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
-            if private_key:
-                acc = Account.from_key(private_key)
-                wallet_address = acc.address
-        except Exception:
-            pass
+            from py_clob_client.client import ClobClient
+            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
             
+            client = ClobClient(
+                host="https://clob.polymarket.com",
+                key=private_key,
+                chain_id=137,
+                signature_type=sig_type
+            )
+            # Auto-derive L2 credentials if needed
+            api_key = os.getenv("POLYMARKET_API_KEY")
+            api_secret = os.getenv("POLYMARKET_API_SECRET")
+            api_passphrase = os.getenv("POLYMARKET_API_PASSPHRASE")
+            
+            if not (api_key and api_secret and api_passphrase):
+                client.set_api_creds(client.create_or_derive_api_creds())
+            else:
+                from py_clob_client.clob_types import ApiKeys
+                creds = ApiKeys(api_key=api_key, secret=api_secret, passphrase=api_passphrase)
+                client.set_api_creds(creds)
+                
+            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            res = client.get_balance_allowance(params)
+            
+            balance = 0.0
+            if isinstance(res, dict):
+                balance = float(res.get("balance", 0.0))
+            else:
+                balance = float(getattr(res, "balance", 0.0))
+            return balance
+        except Exception as e:
+            logger.error(f"Failed to fetch balance from CLOB API: {e}. Falling back to RPC...")
+            
+    # Fallback to RPC USDC balance of MetaMask wallet address
     if not wallet_address:
         return 0.0
         
