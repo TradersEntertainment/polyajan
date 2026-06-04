@@ -144,6 +144,28 @@ function App() {
     }
   };
 
+  const triggerReset = async () => {
+    if (!window.confirm("Sanal portföyü sıfırlamak ve tüm açık/kapalı işlemleri temizlemek istediğinize emin misiniz?")) {
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/reset-portfolio`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        setScanMessage(data.message || 'Portföy başarıyla sıfırlandı!');
+        await fetchData();
+      } else {
+        setScanMessage(`Error: ${data.detail || 'Failed to reset portfolio'}`);
+      }
+    } catch (error) {
+      setScanMessage('Failed to connect to the backend server.');
+    } finally {
+      setIsLoading(false);
+      setTimeout(() => setScanMessage(null), 5000);
+    }
+  };
+
   // Helper formatting functions
   const formatDate = (isoString: string) => {
     try {
@@ -343,6 +365,15 @@ function App() {
               title="Yenile"
             >
               <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+            </button>
+
+            <button
+              onClick={triggerReset}
+              disabled={isLoading}
+              className="px-4 py-2.5 bg-neutral-900 hover:bg-neutral-800 text-rose-400 hover:text-rose-350 border border-neutral-800 hover:border-rose-500/20 rounded-xl font-medium transition duration-200 flex items-center gap-2 text-sm disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
+              Portföyü Sıfırla
             </button>
 
             <button

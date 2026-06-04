@@ -81,6 +81,24 @@ async def get_portfolio_history():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/reset-portfolio")
+async def reset_portfolio():
+    try:
+        pool = await database.get_pool()
+        from datetime import datetime
+        now_str = datetime.now().isoformat()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("DELETE FROM virtual_trades")
+                await conn.execute("UPDATE virtual_portfolio SET balance = 1000.0 WHERE id = 1")
+                await conn.execute("DELETE FROM portfolio_history")
+                await conn.execute("INSERT INTO portfolio_history (equity, balance, recorded_at) VALUES (1000.0, 1000.0, $1)", now_str)
+                await conn.execute("UPDATE global_settings SET value = 'MODERATE' WHERE key = 'risk_profile'")
+                await conn.execute("UPDATE global_settings SET value = 'Baslangic seviyesi: Dengeli strateji.' WHERE key = 'risk_justification'")
+        return {"message": "Sanal portfoy basariyla sifirlandi, tum islemler temizlendi."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # --- Serve Frontend Static Files ---
 frontend_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/dist"))
 
