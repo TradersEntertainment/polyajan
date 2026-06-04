@@ -604,6 +604,7 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
     max_attempts = 5
     attempt = 0
     url = f"https://clob.polymarket.com/book?token_id={token_id}"
+    last_error = "No attempts made"
 
     while remaining_size_usd >= 2.0 and attempt < max_attempts:
         attempt += 1
@@ -612,16 +613,19 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
             async with httpx.AsyncClient() as client_http:
                 resp = await client_http.get(url, timeout=6.0)
                 if resp.status_code != 200:
+                    last_error = f"Failed to fetch orderbook: status {resp.status_code}"
                     logger.error(f"Failed to fetch orderbook on attempt {attempt}: status {resp.status_code}")
                     break
                 book = resp.json()
                 asks = book.get("asks", [])
                 asks = sorted(asks, key=lambda x: float(x.get("price") if isinstance(x, dict) else getattr(x, "price")))
         except Exception as ob_err:
+            last_error = f"Failed to query orderbook: {ob_err}"
             logger.error(f"Failed to query orderbook depth on attempt {attempt}: {ob_err}")
             break
 
         if not asks:
+            last_error = "No asks available in orderbook"
             logger.warning(f"No asks available in orderbook on attempt {attempt}")
             break
 
@@ -633,16 +637,19 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
         # Check price safety rules:
         # 1. Under no circumstances buy contracts below 45c (0.45)
         if ask_p < 0.45:
+            last_error = f"Best ask price ${ask_p:.2f} is below $0.45 limit"
             logger.warning(f"Best ask price ${ask_p:.2f} is below $0.45 limit. Rejecting order on attempt {attempt}.")
             break
 
         # 2. Check upward slippage: limit order at best ask shouldn't exceed 2% of calculated entry price
         if ask_p > price * 1.02:
+            last_error = f"Best ask price ${ask_p:.2f} exceeds 2% slippage limit of calculated price ${price:.2f}"
             logger.warning(f"Best ask price ${ask_p:.2f} exceeds 2% slippage limit of calculated price ${price:.2f} on attempt {attempt}.")
             break
 
         # 3. Check downward mismatch: if ask price is over 5% lower than expected, reject due to stale data/wrong token mapping
         if ask_p < price * 0.95:
+            last_error = f"Best ask price ${ask_p:.2f} is more than 5% below calculated price ${price:.2f}"
             logger.warning(f"Best ask price ${ask_p:.2f} is more than 5% below calculated price ${price:.2f} (likely stale data or wrong token mapping). Rejecting on attempt {attempt}.")
             break
 
@@ -651,6 +658,7 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
 
         # Scale down to what is available. If less than $2.0, we cannot place the order.
         if fill_size_usd < 2.0:
+            last_error = f"Scaled size ${fill_size_usd:.2f} below CLOB minimum $2.0 (Available depth: ${available_usd:.2f})"
             logger.warning(f"Taker order attempt {attempt} scaled size ${fill_size_usd:.2f} below CLOB minimum $2.0 (Available depth: ${available_usd:.2f})")
             break
 
@@ -687,9 +695,11 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
                 execution_prices.append(ask_p)
                 filled_sizes.append(fill_size_usd)
             else:
+                last_error = f"CLOB order placement failed: {resp_order}"
                 logger.error(f"CLOB order placement failed on attempt {attempt}: {resp_order}")
                 break
         except Exception as e:
+            last_error = f"Exception during order placement: {str(e)}"
             logger.error(f"Exception during CLOB order placement on attempt {attempt}: {e}")
             break
 
@@ -701,7 +711,7 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
         avg_price = sum(p * s for p, s in zip(execution_prices, filled_sizes)) / total_filled_usd
         return {"success": True, "filled_size": total_filled_usd, "price": avg_price}
     else:
-        return {"success": False, "error": "No fills completed"}
+        return {"success": False, "error": last_error}
 
 
 async def update_trade_post_mortem(trade_id: int, post_mortem: str):
