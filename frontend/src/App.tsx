@@ -84,6 +84,7 @@ function App() {
   const [logs, setLogs] = useState<AgentLog[]>([]);
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [virtualTrades, setVirtualTrades] = useState<VirtualTrade[]>([]);
+  const [portfolioHistory, setPortfolioHistory] = useState<{ equity: number; balance: number; recorded_at: string }[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
@@ -94,12 +95,13 @@ function App() {
   const fetchData = async () => {
     setIsLoading(true);
     try {
-      const [signalsRes, tuningsRes, logsRes, portfolioRes, tradesRes] = await Promise.all([
+      const [signalsRes, tuningsRes, logsRes, portfolioRes, tradesRes, historyRes] = await Promise.all([
         fetch(`${API_BASE}/api/signals`),
         fetch(`${API_BASE}/api/tunings`),
         fetch(`${API_BASE}/api/logs`),
         fetch(`${API_BASE}/api/portfolio`),
-        fetch(`${API_BASE}/api/trades/virtual`)
+        fetch(`${API_BASE}/api/trades/virtual`),
+        fetch(`${API_BASE}/api/portfolio/history`)
       ]);
 
       if (signalsRes.ok) setSignals(await signalsRes.json());
@@ -107,6 +109,7 @@ function App() {
       if (logsRes.ok) setLogs(await logsRes.json());
       if (portfolioRes.ok) setPortfolio(await portfolioRes.json());
       if (tradesRes.ok) setVirtualTrades(await tradesRes.json());
+      if (historyRes.ok) setPortfolioHistory(await historyRes.json());
     } catch (error) {
       console.error("Error fetching data from backend API:", error);
     } finally {
@@ -206,6 +209,103 @@ function App() {
   const resolvedTrades = virtualTrades.filter(t => t.status !== 'open');
   const winCount = resolvedTrades.filter(t => t.status === 'won').length;
   const winRate = resolvedTrades.length > 0 ? Math.round((winCount / resolvedTrades.length) * 100) : 0;
+
+  const renderBalanceChart = () => {
+    if (portfolioHistory.length === 0) return null;
+
+    let points = [...portfolioHistory];
+    if (points.length === 1) {
+      const p0 = points[0];
+      const baseDate = new Date(p0.recorded_at);
+      baseDate.setMinutes(baseDate.getMinutes() - 10);
+      points = [
+        { equity: 1000.0, balance: 1000.0, recorded_at: baseDate.toISOString() },
+        p0
+      ];
+    }
+
+    const equities = points.map(p => p.equity);
+    const minVal = Math.min(...equities, 990.0) * 0.995;
+    const maxVal = Math.max(...equities, 1010.0) * 1.005;
+    const valRange = maxVal - minVal || 1.0;
+
+    const width = 600;
+    const height = 180;
+    const paddingLeft = 45;
+    const paddingRight = 15;
+    const paddingTop = 15;
+    const paddingBottom = 20;
+
+    const getX = (index: number) => {
+      return paddingLeft + (index / (points.length - 1)) * (width - paddingLeft - paddingRight);
+    };
+
+    const getY = (val: number) => {
+      return height - paddingBottom - ((val - minVal) / valRange) * (height - paddingTop - paddingBottom);
+    };
+
+    // Generate SVG path string
+    let pathD = `M ${getX(0)} ${getY(points[0].equity)}`;
+    for (let i = 1; i < points.length; i++) {
+      pathD += ` L ${getX(i)} ${getY(points[i].equity)}`;
+    }
+
+    // Generate area path string (closes the polygon to bottom)
+    const areaD = `${pathD} L ${getX(points.length - 1)} ${height - paddingBottom} L ${getX(0)} ${height - paddingBottom} Z`;
+
+    return (
+      <div className="bg-neutral-900/40 border border-neutral-850 rounded-2xl p-5 backdrop-blur-sm">
+        <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
+          <TrendingUp size={16} className="text-purple-400" />
+          Bakiye ve Net Portföy Grafiği (Sanal)
+        </h3>
+        <div className="relative w-full h-48 bg-neutral-950/60 rounded-xl p-3 border border-neutral-850/80 flex flex-col justify-between">
+          <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full">
+            <defs>
+              <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="rgb(139, 92, 246)" stopOpacity="0.2" />
+                <stop offset="100%" stopColor="rgb(139, 92, 246)" stopOpacity="0.0" />
+              </linearGradient>
+            </defs>
+            
+            {/* Grid horizontal lines */}
+            {[0, 0.25, 0.5, 0.75, 1].map((ratio, idx) => {
+              const val = minVal + ratio * valRange;
+              const y = getY(val);
+              return (
+                <g key={idx}>
+                  <line x1={paddingLeft} y1={y} x2={width - paddingRight} y2={y} stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
+                  <text x={paddingLeft - 8} y={y + 3} textAnchor="end" className="fill-neutral-500 text-[8px] font-mono">${val.toFixed(0)}</text>
+                </g>
+              );
+            })}
+
+            {/* Area under the line */}
+            <path d={areaD} fill="url(#chartGrad)" />
+
+            {/* Sparkline */}
+            <path d={pathD} fill="none" stroke="rgb(139, 92, 246)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+
+            {/* Circles at data points */}
+            {points.map((p, idx) => (
+              <circle 
+                key={idx} 
+                cx={getX(idx)} 
+                cy={getY(p.equity)} 
+                r={points.length > 20 ? "1.5" : "2.5"} 
+                className="fill-purple-400 stroke-purple-600 stroke-[1]"
+              />
+            ))}
+          </svg>
+        </div>
+        <div className="flex justify-between text-[10px] text-neutral-500 font-mono mt-2 px-1">
+          <span>{formatDate(points[0].recorded_at)}</span>
+          <span>Son Değer: ${points[points.length - 1].equity.toFixed(2)}</span>
+          <span>{formatDate(points[points.length - 1].recorded_at)}</span>
+        </div>
+      </div>
+    );
+  };
 
   const filteredVirtualTrades = virtualTrades.filter(t => 
     t.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -610,6 +710,9 @@ function App() {
                     </div>
                   </div>
                 </div>
+
+                {/* Balance & Net Equity Sparkline */}
+                {renderBalanceChart()}
 
                 {/* Open Positions Grid */}
                 <div className="bg-neutral-900/40 border border-neutral-850 rounded-2xl p-5 backdrop-blur-sm">

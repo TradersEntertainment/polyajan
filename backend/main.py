@@ -71,6 +71,16 @@ async def get_virtual_trades():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/portfolio/history")
+async def get_portfolio_history():
+    try:
+        pool = await database.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT equity, balance, recorded_at FROM portfolio_history ORDER BY recorded_at ASC LIMIT 100")
+            return [dict(row) for row in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # --- Serve Frontend Static Files ---
 frontend_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/dist"))
 

@@ -106,6 +106,16 @@ async def init_db():
                 )
             """)
 
+            # 7. Portfolio History table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS portfolio_history (
+                    id SERIAL PRIMARY KEY,
+                    equity REAL NOT NULL,
+                    balance REAL NOT NULL,
+                    recorded_at TEXT NOT NULL
+                )
+            """)
+
             # Insert default tunings for watchlist symbols
             default_symbols = [
                 "SPY", "PLTR", "TSLA", "NVDA", "AAPL", "AMZN", "META", "GOOGL",
@@ -142,6 +152,14 @@ async def init_db():
                 VALUES ('risk_justification', 'Baslangic seviyesi: Dengeli strateji.', $1)
                 ON CONFLICT (key) DO NOTHING
             """, now_str)
+
+            # Seed initial portfolio history if empty
+            history_count = await conn.fetchval("SELECT COUNT(*) FROM portfolio_history")
+            if history_count == 0:
+                await conn.execute("""
+                    INSERT INTO portfolio_history (equity, balance, recorded_at)
+                    VALUES (1000.0, 1000.0, $1)
+                """, now_str)
 
 # --- Parameter Tuning Functions ---
 
@@ -369,3 +387,15 @@ async def get_recent_performance(limit: int = 10) -> dict:
             "total_profit": total_profit,
             "total_trades": total_trades
         }
+
+async def record_portfolio_history():
+    """Calculates current equity/balance and records it in history table."""
+    port = await get_portfolio()
+    from datetime import datetime
+    now_str = datetime.now().isoformat()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO portfolio_history (equity, balance, recorded_at) VALUES ($1, $2, $3)",
+            port["equity"], port["balance"], now_str
+        )

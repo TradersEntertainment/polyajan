@@ -298,6 +298,7 @@ async def resolve_virtual_trades():
     et_tz = pytz.timezone("US/Eastern")
     now_et = datetime.now(et_tz)
     
+    resolved_any = False
     for t in open_trades:
         trade_id = t["id"]
         symbol = t["symbol"]
@@ -398,6 +399,7 @@ async def resolve_virtual_trades():
                 payout = 1.0 if is_win else 0.0
                 
                 await database.resolve_virtual_trade(trade_id, status, payout)
+                resolved_any = True
                 
                 summary = f"Sanal Islem Cozuldu: {symbol} {direction} -> {status.upper()} (Kapanis: ${close_price:.2f} vs Ref: ${ref_price:.2f})"
                 await database.add_agent_log(
@@ -406,6 +408,9 @@ async def resolve_virtual_trades():
                     f"Kapanis fiyati: ${close_price:.2f}. Referans fiyati: ${ref_price:.2f}. Kazanan Yon: {win_dir}."
                 )
                 logger.info(f"AI Agent: {summary}")
+                
+    if resolved_any:
+        await database.record_portfolio_history()
 
 async def run_autonomous_scan_cycle():
     """Main scanning cycle to compare Polymarket prices vs historical Quant win-rates."""
@@ -548,6 +553,9 @@ async def run_autonomous_scan_cycle():
                             f"Risk Profili: {risk_profile}. Referans Fiyat: ${ref_price:.2f}."
                         )
                         logger.info(f"AI Agent: Virtual trade opened: {symbol} {trade_dir}")
+                        
+    # Record portfolio value after scan cycle completes
+    await database.record_portfolio_history()
 
 async def agent_scheduler_loop():
     """Background task runner for the AI Agent."""
