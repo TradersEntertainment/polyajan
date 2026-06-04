@@ -545,7 +545,7 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
                     chain_id=137,
                     signature_type=sig_type
                 )
-                client.set_api_creds(client.create_or_derive_api_key())
+                client.set_api_creds(client.create_or_derive_api_creds())
             else:
                 from py_clob_client.clob_types import ApiKeys
                 creds = ApiKeys(

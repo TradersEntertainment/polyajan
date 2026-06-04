@@ -86,7 +86,7 @@ async def test_clob_connection():
                 chain_id=137,
                 signature_type=sig_type
             )
-            creds = client.create_or_derive_api_key()
+            creds = client.create_or_derive_api_creds()
             client.set_api_creds(creds)
             
             return {
