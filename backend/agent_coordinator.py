@@ -76,11 +76,22 @@ async def fetch_active_polymarket_markets() -> list:
                         continue
 
                     up_price = down_price = 0.0
+                    up_token_id = down_token_id = None
+                    
+                    raw_clob_tokens = market.get("clobTokenIds", [])
+                    if isinstance(raw_clob_tokens, str):
+                        clob_token_ids = json.loads(raw_clob_tokens)
+                    else:
+                        clob_token_ids = raw_clob_tokens
+
                     for i, o in enumerate(outcomes):
+                        token_id = clob_token_ids[i] if i < len(clob_token_ids) else None
                         if o.lower() in ("up", "yes"):
                             up_price = float(prices[i])
+                            up_token_id = token_id
                         elif o.lower() in ("down", "no"):
                             down_price = float(prices[i])
+                            down_token_id = token_id
 
                     active_markets.append({
                         "symbol": symbol,
@@ -88,6 +99,8 @@ async def fetch_active_polymarket_markets() -> list:
                         "slug": slug,
                         "up_price": up_price,
                         "down_price": down_price,
+                        "up_token_id": up_token_id,
+                        "down_token_id": down_token_id,
                         "title": event.get("title", slug)
                     })
                 except Exception as e:
@@ -421,30 +434,43 @@ async def run_autonomous_scan_cycle():
     
     # 2. Archive active signals
     await database.archive_all_signals()
-
-    # 3. Get global risk profile
+ 
+    # 3. Get global risk profile and determine trading mode / limits
     risk_profile = await database.get_risk_profile()
-    if risk_profile == "CONSERVATIVE":
-        required_edge_threshold = 0.15
-        trade_size_usd = 50.0
-    elif risk_profile == "AGGRESSIVE":
-        required_edge_threshold = 0.08
-        trade_size_usd = 150.0
-    else: # MODERATE
-        required_edge_threshold = 0.12
-        trade_size_usd = 100.0
+    trading_mode = os.getenv("TRADING_MODE", "VIRTUAL").upper()
+    portfolio = await database.get_portfolio()
+    total_capital = portfolio["equity"]
 
+    if trading_mode == "REAL":
+        # Dynamic sizing/thresholds for Real account ($100 budget)
+        # Strict user constraint: en kötü garanti %1 bulsun
+        required_edge_threshold = 0.01
+        trade_size_usd = max(2.0, total_capital * 0.10) # default baseline size, but sequentially managed
+    else:
+        # Standard sizing for Virtual account ($1000 budget)
+        if risk_profile == "CONSERVATIVE":
+            required_edge_threshold = 0.15
+            trade_size_usd = 50.0
+        elif risk_profile == "AGGRESSIVE":
+            required_edge_threshold = 0.08
+            trade_size_usd = 150.0
+        else: # MODERATE
+            required_edge_threshold = 0.12
+            trade_size_usd = 100.0
+ 
     # 4. Fetch active Polymarket markets
     markets = await fetch_active_polymarket_markets()
     if not markets:
         logger.info("AI Agent: No active Polymarket markets found in this window.")
         return
-
+ 
     import pyth_client
     et_tz = pytz.timezone("US/Eastern")
     now_et = datetime.now(et_tz)
     total_minutes = now_et.hour * 60 + now_et.minute
-
+    
+    trade_candidates = []
+ 
     for m in markets:
         symbol = m["symbol"]
         bet_type = m["bet_type"]
@@ -456,15 +482,15 @@ async def run_autonomous_scan_cycle():
         tuning = await database.get_tuning(symbol, bet_type)
         lookback = tuning["lookback_days"]
         min_yield = tuning["min_expected_yield"]
-
+ 
         pyth_id, _ = pyth_client.get_pyth_id(symbol)
         if not pyth_id:
             continue
-
+ 
         current_price = await pyth_client.get_active_price(symbol, pyth_id)
         if not current_price:
             continue
-
+ 
         # Get yesterday's close reference
         from_ts, to_ts = pyth_client.get_previous_close_times(symbol)
         ref_price = await pyth_client.get_historical_candle_price(
@@ -472,27 +498,27 @@ async def run_autonomous_scan_cycle():
         )
         if not ref_price:
             continue
-
+ 
         close_minutes = 1020 if any(c in symbol for c in ["WTI", "XAU", "XAG", "GOLD", "SILVER"]) else 960
         minutes_to_close = max(0, close_minutes - total_minutes)
-
+ 
         # Perform backtests for both UP and DOWN outcomes
         for direction in ["UP", "DOWN"]:
             poly_prob = up_price if direction == "UP" else down_price
             if poly_prob <= 0.01:
                 continue
-
+ 
             if bet_type == "open":
                 res = await backtester.backtest_open_bet(symbol, direction, lookback)
             else:
                 res = await backtester.backtest_close_bet(symbol, current_price, ref_price, direction, minutes_to_close, lookback)
-
+ 
             quant_prob = res["win_rate"] / 100.0
             edge = quant_prob - poly_prob
             
             # Expected yield on Polymarket: (1 - purchase_price) / purchase_price * 100
             expected_yield = ((1.0 - poly_prob) / poly_prob * 100) if poly_prob > 0 else 0.0
-
+ 
             # Filter: We look for opportunities where:
             # - Real quant probability of winning is high (e.g. >= 85%) AND expected yield meets the minimum yield
             # - OR there is a significant pricing edge (e.g. real probability is X% higher than Polymarket price)
@@ -509,7 +535,7 @@ async def run_autonomous_scan_cycle():
                     stars, level = "⭐⭐⭐", "ORTA RİSKLİ"
                 else:
                     stars, level = "⭐⭐", "SPEKÜLATİF"
-
+ 
                 # Log signal into database
                 diff_pct = ((current_price - ref_price) / ref_price) * 100
                 await database.add_signal(
@@ -526,33 +552,107 @@ async def run_autonomous_scan_cycle():
                     confidence_stars=stars
                 )
                 logger.info(f"AI Agent Signal: {symbol} {direction} | Poly: {poly_prob:.2f} vs Quant: {quant_prob:.2f} (Edge: {edge:+.2f})")
-
-                # Open virtual trade if we don't have one open for this asset
+ 
+                # Gather trade candidates for processing
+                token_id = m["up_token_id"] if direction == "UP" else m["down_token_id"]
                 trade_dir = f"OPEN_{direction}" if bet_type == "open" else direction
-                open_trades = await database.get_open_virtual_trades()
-                already_has_position = any(
-                    t["symbol"] == symbol and t["direction"] == trade_dir
-                    for t in open_trades
-                )
-
-                if not already_has_position:
-                    success = await database.open_virtual_trade(
-                        symbol=symbol,
-                        direction=trade_dir,
-                        ref_price=ref_price,
-                        entry_price=poly_prob,
-                        size_usd=trade_size_usd,
-                        polymarket_slug=slug
-                    )
-                    if success:
-                        shares = trade_size_usd / poly_prob
-                        await database.add_agent_log(
-                            "Decision",
-                            f"Sanal Islem Acildi: {symbol} {trade_dir}",
-                            f"Pozisyon acildi: {shares:.2f} adet hisse ${poly_prob:.2f} fiyattan satın alındı (Toplam: ${trade_size_usd:.2f}).\n"
-                            f"Risk Profili: {risk_profile}. Referans Fiyat: ${ref_price:.2f}."
+                
+                trade_candidates.append({
+                    "symbol": symbol,
+                    "direction": trade_dir,
+                    "ref_price": ref_price,
+                    "entry_price": poly_prob,
+                    "edge": edge,
+                    "slug": slug,
+                    "token_id": token_id
+                })
+                
+    # 5. Execute trades from highest edge to lowest edge to maximize capital usage
+    trade_candidates.sort(key=lambda x: x["edge"], reverse=True)
+    
+    # Filter candidates to only those we don't already have open positions in
+    open_trades = await database.get_open_virtual_trades()
+    active_positions = {(t["symbol"], t["direction"]) for t in open_trades}
+    new_candidates = [c for c in trade_candidates if (c["symbol"], c["direction"]) not in active_positions]
+    
+    if new_candidates:
+        # Get current portfolio values dynamically
+        port = await database.get_portfolio()
+        balance = port["balance"]
+        equity = port["equity"]
+        
+        if trading_mode == "REAL":
+            # Determine total budget to allocate to leave at most 5% idle cash
+            target_cash = equity * 0.05
+            budget_to_allocate = balance - target_cash
+            
+            # Minimum CLOB trade size is $2.0
+            if budget_to_allocate >= 2.0:
+                remaining_budget = budget_to_allocate
+                for idx, cand in enumerate(new_candidates):
+                    if remaining_budget < 2.0:
+                        break
+                    
+                    is_last = (idx == len(new_candidates) - 1)
+                    if is_last:
+                        size_to_trade = remaining_budget
+                    else:
+                        share = remaining_budget / (len(new_candidates) - idx)
+                        size_to_trade = max(2.0, share)
+                        if size_to_trade > remaining_budget:
+                            size_to_trade = remaining_budget
+                            
+                    if size_to_trade >= 2.0:
+                        success = await database.open_virtual_trade(
+                            symbol=cand["symbol"],
+                            direction=cand["direction"],
+                            ref_price=cand["ref_price"],
+                            entry_price=cand["entry_price"],
+                            size_usd=size_to_trade,
+                            polymarket_slug=cand["slug"],
+                            clob_token_id=cand["token_id"]
                         )
-                        logger.info(f"AI Agent: Virtual trade opened: {symbol} {trade_dir}")
+                        if success:
+                            remaining_budget -= size_to_trade
+                            shares = size_to_trade / cand["entry_price"]
+                            await database.add_agent_log(
+                                "Decision",
+                                f"Gerçek İşlem Açıldı: {cand['symbol']} {cand['direction']}",
+                                f"Pozisyon açıldı: {shares:.2f} adet hisse ${cand['entry_price']:.2f} fiyattan satın alındı (Toplam: ${size_to_trade:.2f}).\n"
+                                f"Risk Profili: {risk_profile}. Referans Fiyat: ${cand['ref_price']:.2f}."
+                            )
+                            logger.info(f"AI Agent: Real trade opened: {cand['symbol']} {cand['direction']} (Size: ${size_to_trade:.2f})")
+        else:
+            # Virtual trading mode logic (uses standard trade_size_usd per trade, but caps at remaining balance)
+            for cand in new_candidates:
+                port = await database.get_portfolio()
+                balance = port["balance"]
+                
+                size_to_trade = trade_size_usd
+                if balance < size_to_trade:
+                    if balance >= 2.0:
+                        size_to_trade = balance
+                    else:
+                        continue
+                        
+                success = await database.open_virtual_trade(
+                    symbol=cand["symbol"],
+                    direction=cand["direction"],
+                    ref_price=cand["ref_price"],
+                    entry_price=cand["entry_price"],
+                    size_usd=size_to_trade,
+                    polymarket_slug=cand["slug"],
+                    clob_token_id=cand["token_id"]
+                )
+                if success:
+                    shares = size_to_trade / cand["entry_price"]
+                    await database.add_agent_log(
+                        "Decision",
+                        f"Sanal İşlem Açıldı: {cand['symbol']} {cand['direction']}",
+                        f"Sanal pozisyon açıldı: {shares:.2f} adet hisse ${cand['entry_price']:.2f} fiyattan satın alındı (Toplam: ${size_to_trade:.2f}).\n"
+                        f"Risk Profili: {risk_profile}. Referans Fiyat: ${cand['ref_price']:.2f}."
+                    )
+                    logger.info(f"AI Agent: Virtual trade opened: {cand['symbol']} {cand['direction']} (Size: ${size_to_trade:.2f})")
                         
     # Record portfolio value after scan cycle completes
     await database.record_portfolio_history()

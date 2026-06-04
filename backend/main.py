@@ -87,15 +87,23 @@ async def reset_portfolio():
         pool = await database.get_pool()
         from datetime import datetime
         now_str = datetime.now().isoformat()
+        
+        # Get appropriate initial balance based on mode
+        trading_mode = os.getenv("TRADING_MODE", "VIRTUAL").upper()
+        if trading_mode == "REAL":
+            init_balance = await database.get_polymarket_usdc_balance()
+        else:
+            init_balance = 1000.0
+            
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("DELETE FROM virtual_trades")
-                await conn.execute("UPDATE virtual_portfolio SET balance = 1000.0 WHERE id = 1")
+                await conn.execute("UPDATE virtual_portfolio SET balance = $1 WHERE id = 1", init_balance)
                 await conn.execute("DELETE FROM portfolio_history")
-                await conn.execute("INSERT INTO portfolio_history (equity, balance, recorded_at) VALUES (1000.0, 1000.0, $1)", now_str)
+                await conn.execute("INSERT INTO portfolio_history (equity, balance, recorded_at) VALUES ($1, $1, $2)", init_balance, now_str)
                 await conn.execute("UPDATE global_settings SET value = 'MODERATE' WHERE key = 'risk_profile'")
                 await conn.execute("UPDATE global_settings SET value = 'Baslangic seviyesi: Dengeli strateji.' WHERE key = 'risk_justification'")
-        return {"message": "Sanal portfoy basariyla sifirlandi, tum islemler temizlendi."}
+        return {"message": f"{'Gerçek' if trading_mode == 'REAL' else 'Sanal'} portföy başarıyla sıfırlandı, tüm işlemler temizlendi."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

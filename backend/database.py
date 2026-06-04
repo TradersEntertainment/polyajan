@@ -97,6 +97,10 @@ async def init_db():
                 )
             """)
 
+            # Add clob_token_id & trade_type for real trading tracking
+            await conn.execute("ALTER TABLE virtual_trades ADD COLUMN IF NOT EXISTS clob_token_id TEXT")
+            await conn.execute("ALTER TABLE virtual_trades ADD COLUMN IF NOT EXISTS trade_type TEXT DEFAULT 'virtual'")
+
             # 6. Global Settings table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS global_settings (
@@ -238,8 +242,12 @@ async def get_portfolio() -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
         # Get balance
-        row = await conn.fetchrow("SELECT balance FROM virtual_portfolio WHERE id = 1")
-        balance = row["balance"] if row else 1000.0
+        trading_mode = os.getenv("TRADING_MODE", "VIRTUAL").upper()
+        if trading_mode == "REAL":
+            balance = await get_polymarket_usdc_balance()
+        else:
+            row = await conn.fetchrow("SELECT balance FROM virtual_portfolio WHERE id = 1")
+            balance = row["balance"] if row else 1000.0
             
         # Get settings
         risk_profile = 'MODERATE'
@@ -300,28 +308,45 @@ async def update_risk_profile(profile: str, justification: str):
             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
         """, justification, now_str)
 
-async def open_virtual_trade(symbol: str, direction: str, ref_price: float, entry_price: float, size_usd: float, polymarket_slug: str = None) -> bool:
-    """Opens a virtual trade if balance is sufficient."""
+async def open_virtual_trade(symbol: str, direction: str, ref_price: float, entry_price: float, size_usd: float, polymarket_slug: str = None, clob_token_id: str = None) -> bool:
+    """Opens a virtual (or real) trade if balance is sufficient."""
     from datetime import datetime
     now_str = datetime.now().isoformat()
     pool = await get_pool()
+    trading_mode = os.getenv("TRADING_MODE", "VIRTUAL").upper()
+    
     async with pool.acquire() as conn:
         # Get current balance
-        row = await conn.fetchrow("SELECT balance FROM virtual_portfolio WHERE id = 1")
-        balance = row["balance"] if row else 0.0
+        if trading_mode == "REAL":
+            balance = await get_polymarket_usdc_balance()
+        else:
+            row = await conn.fetchrow("SELECT balance FROM virtual_portfolio WHERE id = 1")
+            balance = row["balance"] if row else 0.0
             
         if balance < size_usd:
+            logger.warning(f"Insufficient funds for trade {symbol} {direction}: Balance {balance} < {size_usd}")
             return False
             
-        # Deduct balance
-        await conn.execute("UPDATE virtual_portfolio SET balance = balance - $1, updated_at = $2 WHERE id = 1", size_usd, now_str)
+        # Place real order on Polymarket if mode is REAL
+        if trading_mode == "REAL":
+            if not clob_token_id:
+                logger.error(f"Cannot place real order for {symbol} {direction} without clob_token_id!")
+                return False
+            order_res = await place_polymarket_clob_order(clob_token_id, entry_price, size_usd)
+            if not order_res.get("success"):
+                logger.error(f"Real Polymarket order failed: {order_res.get('error')}")
+                return False
+        else:
+            # Deduct balance (simulated)
+            await conn.execute("UPDATE virtual_portfolio SET balance = balance - $1, updated_at = $2 WHERE id = 1", size_usd, now_str)
         
-        # Insert trade
+        # Insert trade into DB
         shares = size_usd / entry_price
+        trade_type = 'real' if trading_mode == "REAL" else 'virtual'
         await conn.execute("""
-            INSERT INTO virtual_trades (symbol, direction, ref_price, entry_price, size_usd, shares, status, created_at, polymarket_slug)
-            VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8)
-        """, symbol.upper(), direction, ref_price, entry_price, size_usd, shares, now_str, polymarket_slug)
+            INSERT INTO virtual_trades (symbol, direction, ref_price, entry_price, size_usd, shares, status, created_at, polymarket_slug, clob_token_id, trade_type)
+            VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9, $10)
+        """, symbol.upper(), direction, ref_price, entry_price, size_usd, shares, now_str, polymarket_slug, clob_token_id, trade_type)
         
         return True
 
@@ -399,3 +424,100 @@ async def record_portfolio_history():
             "INSERT INTO portfolio_history (equity, balance, recorded_at) VALUES ($1, $2, $3)",
             port["equity"], port["balance"], now_str
         )
+
+async def get_polymarket_usdc_balance() -> float:
+    """Fetches live USDC balance of the connected wallet address from Polygon RPC."""
+    wallet_address = os.getenv("POLYMARKET_WALLET_ADDRESS")
+    if not wallet_address:
+        try:
+            from eth_account import Account
+            private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
+            if private_key:
+                acc = Account.from_key(private_key)
+                wallet_address = acc.address
+        except Exception:
+            pass
+            
+    if not wallet_address:
+        return 0.0
+        
+    url = "https://polygon-rpc.com/"
+    usdc_contract = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+    clean_address = wallet_address.lower().replace("0x", "")
+    data = "0x70a08231" + clean_address.zfill(64)
+    
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "eth_call",
+        "params": [
+            {"to": usdc_contract, "data": data},
+            "latest"
+        ],
+        "id": 1
+    }
+    
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, json=payload, timeout=8.0)
+            if resp.status_code == 200:
+                result = resp.json().get("result")
+                if result and result != "0x":
+                    balance_int = int(result, 16)
+                    return balance_int / 1000000.0 # USDC has 6 decimals
+    except Exception as e:
+        logger.error(f"Error fetching RPC balance: {e}")
+        
+    return 0.0
+
+async def place_polymarket_clob_order(token_id: str, price: float, size_usd: float) -> dict:
+    """Places a real buy order on Polymarket CLOB."""
+    private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
+    api_key = os.getenv("POLYMARKET_API_KEY")
+    api_secret = os.getenv("POLYMARKET_API_SECRET")
+    api_passphrase = os.getenv("POLYMARKET_API_PASSPHRASE")
+    sig_type = int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "1"))
+    
+    if not (private_key and api_key and api_secret and api_passphrase):
+        logger.error("Polymarket CLOB credentials missing!")
+        return {"success": False, "error": "Credentials missing"}
+        
+    try:
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import ApiKeys, OrderArgs, Side, OrderType
+        
+        creds = ApiKeys(
+            api_key=api_key,
+            secret=api_secret,
+            passphrase=api_passphrase
+        )
+        client = ClobClient(
+            host="https://clob.polymarket.com",
+            key=private_key,
+            chain_id=137,
+            creds=creds,
+            signature_type=sig_type
+        )
+        
+        shares = size_usd / price
+        
+        # Post order (GTC - Good Till Cancelled)
+        resp = client.create_and_post_order(
+            order_args=OrderArgs(
+                token_id=token_id,
+                price=round(price, 2),
+                side=Side.BUY,
+                size=round(shares, 4)
+            ),
+            order_type=OrderType.GTC
+        )
+        
+        if resp and isinstance(resp, dict) and resp.get("success"):
+            return {"success": True, "order_id": resp.get("orderID")}
+        else:
+            logger.error(f"CLOB order placement failed: {resp}")
+            return {"success": False, "error": resp.get("error") or str(resp)}
+            
+    except Exception as e:
+        logger.error(f"Exception during CLOB order placement: {e}")
+        return {"success": False, "error": str(e)}

@@ -145,7 +145,7 @@ function App() {
   };
 
   const triggerReset = async () => {
-    if (!window.confirm("Sanal portföyü sıfırlamak ve tüm açık/kapalı işlemleri temizlemek istediğinize emin misiniz?")) {
+    if (!window.confirm("Portföy geçmişini ve işlemleri sıfırlamak istediğinize emin misiniz? (Gerçek bakiyeniz sıfırlanmaz, sadece işlem geçmişi temizlenir.)")) {
       return;
     }
     setIsLoading(true);
