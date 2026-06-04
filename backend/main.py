@@ -64,6 +64,51 @@ async def get_portfolio_status():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/test-clob")
+async def test_clob_connection():
+    try:
+        import os
+        from py_clob_client.client import ClobClient
+        
+        private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
+        wallet_address = os.getenv("POLYMARKET_WALLET_ADDRESS")
+        sig_type = int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "1"))
+        
+        if not private_key:
+            return {"status": "error", "message": "POLYMARKET_PRIVATE_KEY is not set in environment."}
+            
+        rpc_balance = await database.get_polymarket_usdc_balance()
+        
+        try:
+            client = ClobClient(
+                host="https://clob.polymarket.com",
+                key=private_key,
+                chain_id=137,
+                signature_type=sig_type
+            )
+            creds = client.create_or_derive_api_key()
+            client.set_api_creds(creds)
+            
+            return {
+                "status": "success",
+                "wallet_address": wallet_address,
+                "usdc_balance_rpc": rpc_balance,
+                "clob_authentication": "successful",
+                "derived_api_key": creds.api_key if hasattr(creds, 'api_key') else getattr(creds, 'key', 'derived'),
+                "message": "Polymarket CLOB API connection is fully working and authenticated!"
+            }
+        except Exception as clob_err:
+            return {
+                "status": "error",
+                "wallet_address": wallet_address,
+                "usdc_balance_rpc": rpc_balance,
+                "clob_authentication": "failed",
+                "error_details": str(clob_err),
+                "message": "Failed to connect/authenticate with Polymarket CLOB. Check private key and signature type."
+            }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.get("/api/trades/virtual")
 async def get_virtual_trades():
     try:
