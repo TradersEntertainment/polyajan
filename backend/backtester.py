@@ -278,3 +278,82 @@ async def backtest_close_bet(symbol: str, current_price: float, ref_price: float
         "win_count": win_count,
         "status": "success"
     }
+
+async def backtest_strike_bet(symbol: str, current_price: float, ref_price: float, strike_price: float, direction: str, minutes_to_close: int, lookback_days: int) -> dict:
+    """
+    Backtests strike-based close options (e.g. SPY closes above $530).
+    Uses the scaled ratio approach:
+      strike_ratio = strike_price / ref_price
+      For each historical day, the scaled strike is:
+        hist_strike = day["prev_close"] * strike_ratio
+      We look at historical days where the price reached a similar relative diff at a similar time,
+      and count how many times the final close was above (for direction=UP) or below (for direction=DOWN) the scaled strike.
+    """
+    days = await fetch_historical_candles(symbol, lookback_days)
+    if not days:
+        return {"win_rate": 0.0, "total_similar_days": 0, "win_count": 0, "status": "no_data"}
+
+    strike_ratio = strike_price / ref_price
+    current_diff_pct = ((current_price - ref_price) / ref_price) * 100
+    current_direction = "UP" if current_diff_pct >= 0 else "DOWN"
+    target_dir = direction.upper()
+    abs_diff = abs(current_diff_pct)
+
+    if abs_diff < 0.01:
+        abs_diff = 0.01
+
+    at_level = []
+    similar = []
+
+    for day in days:
+        best_match = None
+        for snap in day["snapshots"]:
+            if snap["direction"] != current_direction:
+                continue
+            if abs(snap["minutes_to_close"] - minutes_to_close) > 30:
+                continue
+            if best_match is None or abs(snap["minutes_to_close"] - minutes_to_close) < abs(best_match["minutes_to_close"] - minutes_to_close):
+                best_match = snap
+
+        if best_match is None:
+            continue
+
+        snap_abs = abs(best_match["diff_pct"])
+        
+        # Calculate scaled strike for this day
+        hist_strike = day["prev_close"] * strike_ratio
+        
+        # Did we close above or below the scaled strike?
+        if target_dir == "UP":
+            is_win = day["final_close"] > hist_strike
+        else:
+            is_win = day["final_close"] < hist_strike
+
+        entry = {
+            "date": day["date"],
+            "is_win": is_win
+        }
+
+        # Check tolerance ranges
+        if snap_abs >= abs_diff * 0.9:
+            at_level.append(entry)
+        if snap_abs >= abs_diff * 0.5:
+            similar.append(entry)
+
+    # Use conservative pool if we have enough sample sizes
+    if len(at_level) >= 3:
+        sample_pool = at_level
+    else:
+        sample_pool = similar
+
+    total_similar = len(sample_pool)
+    win_count = sum(1 for e in sample_pool if e["is_win"])
+    win_rate = (win_count / total_similar * 100) if total_similar > 0 else 0.0
+
+    return {
+        "win_rate": win_rate,
+        "total_similar_days": total_similar,
+        "win_count": win_count,
+        "status": "success"
+    }
+

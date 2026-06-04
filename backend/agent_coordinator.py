@@ -29,8 +29,71 @@ WATCHLIST = [
 ]
 
 # Fetch active events from Polymarket Gamma API by slugs
+def parse_market_question(question: str) -> tuple:
+    q = question.upper()
+    
+    # Identify Asset
+    matched_symbol = None
+    for sym in WATCHLIST:
+        if sym in q:
+            matched_symbol = sym
+            break
+            
+    if not matched_symbol:
+        fuzzy_map = {
+            "PALANTIR": "PLTR",
+            "TESLA": "TSLA",
+            "NVIDIA": "NVDA",
+            "APPLE": "AAPL",
+            "AMAZON": "AMZN",
+            "GOOGLE": "GOOGL",
+            "ALPHABET": "GOOGL",
+            "MICROSOFT": "MSFT",
+            "NETFLIX": "NFLX",
+            "COINBASE": "COIN",
+            "ROBINHOOD": "HOOD",
+            "AIRBNB": "ABNB",
+            "ROCKET LAB": "RKLB",
+            "MICRON": "MU",
+            "CRUDE OIL": "WTI",
+            "GOLD": "XAU",
+            "SILVER": "XAG",
+            "S&P 500": "SPY",
+            "SPX": "SPY"
+        }
+        for name, sym in fuzzy_map.items():
+            if name in q:
+                matched_symbol = sym
+                break
+                
+    if not matched_symbol:
+        return None, None, None
+        
+    # Extract Strike Price
+    import re
+    match = re.search(r'(?:above|below|exceed|touch|hit)\s*(?:\([A-Z]+\)\s*)?\$?([0-9,.]+)', question, re.IGNORECASE)
+    if not match:
+        return None, None, None
+        
+    try:
+        strike_price = float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None, None, None
+        
+    # Determine type
+    m_type = None
+    if "above" in question.lower() or "exceed" in question.lower():
+        m_type = "above"
+    elif "below" in question.lower():
+        m_type = "below"
+        
+    if not m_type:
+        return None, None, None
+        
+    return matched_symbol, strike_price, m_type
+
 async def fetch_active_polymarket_markets() -> list:
-    """Scans and lists active binary Up/Down markets on Polymarket."""
+    """Scans and lists active binary Up/Down and closes-above/below strike markets on Polymarket."""
     active_markets = []
     et_tz = pytz.timezone("US/Eastern")
     now_et = datetime.now(et_tz)
@@ -109,6 +172,71 @@ async def fetch_active_polymarket_markets() -> list:
     # Fetch in parallel
     tasks = [check_symbol(s) for s in WATCHLIST]
     await asyncio.gather(*tasks)
+
+    # Dynamic closes-above / closes-below search
+    queries = ["closes above", "closes below"]
+    seen_market_ids = set()
+    
+    async with httpx.AsyncClient() as client:
+        for q in queries:
+            url = f"{GAMMA_API}/public-search"
+            params = {
+                "q": q,
+                "active": "true",
+                "closed": "false",
+                "limit": 60
+            }
+            try:
+                resp = await client.get(url, params=params, timeout=10.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    events = data.get("events", [])
+                    for ev in events:
+                        markets = ev.get("markets", [])
+                        for m in markets:
+                            m_id = m.get("id")
+                            if m_id and m_id not in seen_market_ids:
+                                if m.get("active") and not m.get("closed"):
+                                    seen_market_ids.add(m_id)
+                                    
+                                    question = m.get("question", "")
+                                    symbol, strike_price, m_type = parse_market_question(question)
+                                    if symbol:
+                                        outcomes = json.loads(m.get("outcomes", "[]"))
+                                        prices = json.loads(m.get("outcomePrices", "[]"))
+                                        raw_tokens = m.get("clobTokenIds", [])
+                                        if isinstance(raw_tokens, str):
+                                            clob_token_ids = json.loads(raw_tokens)
+                                        else:
+                                            clob_token_ids = raw_tokens
+                                            
+                                        if len(outcomes) >= 2 and len(prices) >= 2 and len(clob_token_ids) >= 2:
+                                            if m_type == "above":
+                                                up_price = float(prices[0])
+                                                down_price = float(prices[1])
+                                                up_token_id = clob_token_ids[0]
+                                                down_token_id = clob_token_ids[1]
+                                            else:
+                                                down_price = float(prices[0])
+                                                up_price = float(prices[1])
+                                                down_token_id = clob_token_ids[0]
+                                                up_token_id = clob_token_ids[1]
+                                                
+                                            active_markets.append({
+                                                "symbol": symbol,
+                                                "bet_type": "strike",
+                                                "slug": m.get("slug"),
+                                                "up_price": up_price,
+                                                "down_price": down_price,
+                                                "up_token_id": up_token_id,
+                                                "down_token_id": down_token_id,
+                                                "title": m.get("question"),
+                                                "strike_price": strike_price
+                                            })
+            except Exception as e:
+                logger.error(f"Error fetching dynamic query {q}: {e}")
+            await asyncio.sleep(0.1)
+
     return active_markets
 
 async def call_groq_api(messages: list, model: str = "llama-3.3-70b-versatile") -> str:
@@ -490,7 +618,7 @@ async def run_autonomous_scan_cycle():
         down_price = m["down_price"]
         
         # Get active parameter tuning from DB
-        tuning = await database.get_tuning(symbol, bet_type)
+        tuning = await database.get_tuning(symbol, "close" if bet_type == "strike" else bet_type)
         lookback = tuning["lookback_days"]
         min_yield = tuning["min_expected_yield"]
  
@@ -521,6 +649,8 @@ async def run_autonomous_scan_cycle():
  
             if bet_type == "open":
                 res = await backtester.backtest_open_bet(symbol, direction, lookback)
+            elif bet_type == "strike":
+                res = await backtester.backtest_strike_bet(symbol, current_price, ref_price, m["strike_price"], direction, minutes_to_close, lookback)
             else:
                 res = await backtester.backtest_close_bet(symbol, current_price, ref_price, direction, minutes_to_close, lookback)
  
@@ -548,13 +678,14 @@ async def run_autonomous_scan_cycle():
                     stars, level = "⭐⭐", "SPEKÜLATİF"
  
                 # Log signal into database
-                diff_pct = ((current_price - ref_price) / ref_price) * 100
+                sig_ref = m["strike_price"] if bet_type == "strike" else ref_price
+                sig_diff = ((current_price - sig_ref) / sig_ref) * 100
                 await database.add_signal(
                     symbol=symbol,
                     direction=f"OPEN_{direction}" if bet_type == "open" else direction,
-                    ref_price=ref_price,
+                    ref_price=sig_ref,
                     current_price=current_price,
-                    diff_pct=diff_pct,
+                    diff_pct=sig_diff,
                     polymarket_slug=slug,
                     polymarket_price=poly_prob,
                     quant_probability=quant_prob,
@@ -571,7 +702,7 @@ async def run_autonomous_scan_cycle():
                 trade_candidates.append({
                     "symbol": symbol,
                     "direction": trade_dir,
-                    "ref_price": ref_price,
+                    "ref_price": sig_ref,
                     "entry_price": poly_prob,
                     "edge": edge,
                     "slug": slug,
