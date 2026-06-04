@@ -497,7 +497,7 @@ async def get_polymarket_usdc_balance() -> float:
             api_passphrase = os.getenv("POLYMARKET_API_PASSPHRASE")
             
             if not (api_key and api_secret and api_passphrase):
-                client.set_api_creds(client.create_or_derive_api_creds())
+                client.set_api_creds(client.create_or_derive_api_key())
             else:
                 from py_clob_client_v2 import ApiCreds
                 creds = ApiCreds(api_key=api_key, secret=api_secret, passphrase=api_passphrase)
@@ -575,7 +575,7 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
                     chain_id=137,
                     signature_type=sig_type
                 )
-                client.set_api_creds(client.create_or_derive_api_creds())
+                client.set_api_creds(client.create_or_derive_api_key())
             else:
                 from py_clob_client_v2 import ApiCreds
                 creds = ApiCreds(
