@@ -68,7 +68,7 @@ async def get_portfolio_status():
 async def test_clob_connection():
     try:
         import os
-        from py_clob_client.client import ClobClient
+        from py_clob_client_v2.client import ClobClient
         
         private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
         wallet_address = os.getenv("POLYMARKET_WALLET_ADDRESS")

@@ -482,8 +482,8 @@ async def get_polymarket_usdc_balance() -> float:
     
     if private_key:
         try:
-            from py_clob_client.client import ClobClient
-            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+            from py_clob_client_v2.client import ClobClient
+            from py_clob_client_v2 import BalanceAllowanceParams, AssetType
             
             client = ClobClient(
                 host="https://clob.polymarket.com",
@@ -499,8 +499,8 @@ async def get_polymarket_usdc_balance() -> float:
             if not (api_key and api_secret and api_passphrase):
                 client.set_api_creds(client.create_or_derive_api_creds())
             else:
-                from py_clob_client.clob_types import ApiKeys
-                creds = ApiKeys(api_key=api_key, secret=api_secret, passphrase=api_passphrase)
+                from py_clob_client_v2 import ApiCreds
+                creds = ApiCreds(api_key=api_key, secret=api_secret, passphrase=api_passphrase)
                 client.set_api_creds(creds)
                 
             params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
@@ -565,7 +565,7 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
     client = None
     if not dry_run:
         try:
-            from py_clob_client.client import ClobClient
+            from py_clob_client_v2.client import ClobClient
             
             if auto_derive:
                 logger.info("Polymarket CLOB L2 API credentials not provided. Deriving them automatically from Private Key...")
@@ -577,8 +577,8 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
                 )
                 client.set_api_creds(client.create_or_derive_api_creds())
             else:
-                from py_clob_client.clob_types import ApiKeys
-                creds = ApiKeys(
+                from py_clob_client_v2 import ApiCreds
+                creds = ApiCreds(
                     api_key=api_key,
                     secret=api_secret,
                     passphrase=api_passphrase
@@ -675,11 +675,11 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
 
         # Real order placement
         try:
-            from py_clob_client.clob_types import OrderArgs
+            from py_clob_client_v2 import OrderArgsV2
             shares = fill_size_usd / ask_p
             
             resp_order = client.create_and_post_order(
-                order_args=OrderArgs(
+                order_args=OrderArgsV2(
                     token_id=token_id,
                     price=round(ask_p, 2),
                     side="BUY",

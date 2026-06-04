@@ -5,4 +5,4 @@ httpx
 pytz
 python-dotenv
 aiofiles
-py-clob-client
+py-clob-client-v2
