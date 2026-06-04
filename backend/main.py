@@ -109,6 +109,60 @@ async def test_clob_connection():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/api/test-trade")
+async def test_real_trade():
+    try:
+        import os
+        
+        private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
+        wallet_address = os.getenv("POLYMARKET_WALLET_ADDRESS")
+        
+        if not private_key:
+            return {"status": "error", "message": "POLYMARKET_PRIVATE_KEY is not set in environment."}
+            
+        # Try dynamic search for SPY UP (YES) token first
+        token_id = "42042588017216294761306663077196918419483534904371512376840641152317874042985"
+        price_limit = 0.99
+        market_title = "S&P 500 (SPY) closes above $755 on June 5? (Fallback)"
+        
+        try:
+            from agent_coordinator import fetch_active_polymarket_markets
+            active_markets = await fetch_active_polymarket_markets()
+            
+            spy_up_markets = [
+                m for m in active_markets 
+                if m.get("symbol") == "SPY" and m.get("up_token_id") and m.get("up_price", 0.0) >= 0.45
+            ]
+            
+            if spy_up_markets:
+                # Select the first one
+                selected_market = spy_up_markets[0]
+                token_id = selected_market["up_token_id"]
+                price_limit = selected_market["up_price"]
+                market_title = selected_market["title"]
+        except Exception as scan_err:
+            # Fallback to defaults
+            pass
+            
+        size_usd = 5.0
+        res = await database.place_polymarket_clob_order(
+            token_id=token_id,
+            price=price_limit,
+            size_usd=size_usd,
+            dry_run=False
+        )
+        
+        return {
+            "status": "success" if res.get("success") else "error",
+            "wallet_address": wallet_address,
+            "target_market": market_title,
+            "token_id": token_id,
+            "order_result": res,
+            "message": "Attempted to execute a $5 SPY UP buy trade on Polymarket CLOB."
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.get("/api/trades/virtual")
 async def get_virtual_trades():
     try:
