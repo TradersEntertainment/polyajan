@@ -333,7 +333,7 @@ async def resolve_virtual_trades():
         
         # Target resolution calculation
         if is_open_bet:
-            creation_cutoff = datetime(created_dt.year, created_dt.month, created_dt.day, 9, 30, 0, tzinfo=et_tz)
+            creation_cutoff = et_tz.localize(datetime(created_dt.year, created_dt.month, created_dt.day, 9, 30, 0))
             if created_dt < creation_cutoff:
                 res_date = created_dt.date()
             else:
@@ -341,11 +341,11 @@ async def resolve_virtual_trades():
                 while res_date.weekday() >= 5 or not pyth_client.is_cme_business_day(res_date):
                     res_date += timedelta(days=1)
                     
-            target_res_dt = datetime(res_date.year, res_date.month, res_date.day, 9, 30, 5, tzinfo=et_tz)
+            target_res_dt = et_tz.localize(datetime(res_date.year, res_date.month, res_date.day, 9, 30, 5))
             
             if now_et >= target_res_dt:
-                start_ts = int(datetime(res_date.year, res_date.month, res_date.day, 9, 30, 0, tzinfo=et_tz).timestamp())
-                end_ts = int(datetime(res_date.year, res_date.month, res_date.day, 9, 30, 59, tzinfo=et_tz).timestamp())
+                start_ts = int(et_tz.localize(datetime(res_date.year, res_date.month, res_date.day, 9, 30, 0)).timestamp())
+                end_ts = int(et_tz.localize(datetime(res_date.year, res_date.month, res_date.day, 9, 30, 59)).timestamp())
                 
                 pyth_id, full_symbol = pyth_client.get_pyth_id(symbol)
                 if not pyth_id:
@@ -379,7 +379,7 @@ async def resolve_virtual_trades():
             is_commodity = any(c in symbol for c in ["WTI", "XAU", "XAG", "GOLD", "SILVER"])
             close_hour = 17 if is_commodity else 16
             
-            creation_cutoff = datetime(created_dt.year, created_dt.month, created_dt.day, close_hour, 0, 0, tzinfo=et_tz)
+            creation_cutoff = et_tz.localize(datetime(created_dt.year, created_dt.month, created_dt.day, close_hour, 0, 0))
             if created_dt < creation_cutoff:
                 res_date = created_dt.date()
             else:
@@ -387,11 +387,11 @@ async def resolve_virtual_trades():
                 while res_date.weekday() >= 5 or not pyth_client.is_cme_business_day(res_date):
                     res_date += timedelta(days=1)
                     
-            target_res_dt = datetime(res_date.year, res_date.month, res_date.day, close_hour, 0, 5, tzinfo=et_tz)
+            target_res_dt = et_tz.localize(datetime(res_date.year, res_date.month, res_date.day, close_hour, 0, 5))
             
             if now_et >= target_res_dt:
-                start_ts = int(datetime(res_date.year, res_date.month, res_date.day, close_hour - 1, 59, 0, tzinfo=et_tz).timestamp())
-                end_ts = int(datetime(res_date.year, res_date.month, res_date.day, close_hour - 1, 59, 59, tzinfo=et_tz).timestamp())
+                start_ts = int(et_tz.localize(datetime(res_date.year, res_date.month, res_date.day, close_hour - 1, 59, 0)).timestamp())
+                end_ts = int(et_tz.localize(datetime(res_date.year, res_date.month, res_date.day, close_hour - 1, 59, 59)).timestamp())
                 
                 pyth_id, full_symbol = pyth_client.get_pyth_id(symbol)
                 if not pyth_id:
