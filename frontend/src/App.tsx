@@ -14,7 +14,9 @@ import {
   Zap, 
   Info,
   Briefcase,
-  History
+  History,
+  XCircle,
+  Loader2
 } from 'lucide-react';
 
 // API Configuration
@@ -103,6 +105,8 @@ function App() {
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [portfolioView, setPortfolioView] = useState<'virtual' | 'real'>('virtual');
   const [isFirstLoad, setIsFirstLoad] = useState(true);
+  const [closingTradeId, setClosingTradeId] = useState<number | null>(null);
+  const [closeResult, setCloseResult] = useState<string | null>(null);
 
   // Fetch all data
   const fetchData = async () => {
@@ -161,6 +165,29 @@ function App() {
     } finally {
       setIsScanning(false);
       setTimeout(() => setScanMessage(null), 5000);
+    }
+  };
+
+  const closeTrade = async (tradeId: number, symbol: string) => {
+    if (!window.confirm(`${symbol} pozisyonunu kapatmak istediğinize emin misiniz? Paylar mevcut en iyi bid fiyatından parça parça satılacaktır.`)) {
+      return;
+    }
+    setClosingTradeId(tradeId);
+    setCloseResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/trades/${tradeId}/close`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        setCloseResult(data.message || 'Pozisyon başarıyla kapatıldı!');
+        await fetchData();
+      } else {
+        setCloseResult(`Hata: ${data.detail || 'Pozisyon kapatılamadı'}`);
+      }
+    } catch (error) {
+      setCloseResult('Sunucuya bağlanılamadı.');
+    } finally {
+      setClosingTradeId(null);
+      setTimeout(() => setCloseResult(null), 8000);
     }
   };
 
@@ -735,6 +762,18 @@ function App() {
             {activeTab === 'portfolio' && (
               <div className="space-y-6">
                 
+                {/* Close Result Toast */}
+                {closeResult && (
+                  <div className={`p-4 rounded-xl border text-sm flex items-center gap-3 animate-fade-in ${
+                    closeResult.startsWith('Hata') 
+                      ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' 
+                      : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                  }`}>
+                    <Info size={16} />
+                    <span>{closeResult}</span>
+                  </div>
+                )}
+
                 {/* View Selector */}
                 <div className="flex justify-between items-center bg-neutral-900/60 p-4 border border-neutral-800 rounded-2xl">
                   <div className="text-left">
@@ -855,6 +894,18 @@ function App() {
                                 </span>
                               </div>
                             </div>
+                            {/* Close Position Button */}
+                            <button
+                              onClick={() => closeTrade(trade.id, trade.symbol)}
+                              disabled={closingTradeId === trade.id}
+                              className="mt-3 w-full py-2 px-3 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/20 hover:border-rose-500/40 rounded-lg text-xs font-semibold uppercase tracking-wider transition duration-200 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              {closingTradeId === trade.id ? (
+                                <><Loader2 size={13} className="animate-spin" /> Satılıyor...</>
+                              ) : (
+                                <><XCircle size={13} /> Pozisyonu Kapat</>
+                              )}
+                            </button>
                           </div>
                         );
                       })}

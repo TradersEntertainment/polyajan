@@ -756,6 +756,302 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
         return {"success": False, "error": last_error}
 
 
+async def place_polymarket_clob_sell_order(token_id: str, shares_to_sell: float, dry_run: bool = False) -> dict:
+    """Sells shares on Polymarket CLOB by hitting bids in chunks, respecting orderbook depth."""
+    private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
+    wallet_address = os.getenv("POLYMARKET_WALLET_ADDRESS")
+    api_key = os.getenv("POLYMARKET_API_KEY")
+    api_secret = os.getenv("POLYMARKET_API_SECRET")
+    api_passphrase = os.getenv("POLYMARKET_API_PASSPHRASE")
+    sig_type = int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "1"))
+
+    if not dry_run:
+        if not private_key:
+            logger.error("Polymarket cüzdan Private Key eksik!")
+            return {"success": False, "error": "Private Key missing"}
+        auto_derive = not (api_key and api_secret and api_passphrase)
+
+    client = None
+    if not dry_run:
+        try:
+            from py_clob_client_v2.client import ClobClient
+
+            import py_clob_client_v2.headers.headers as sdk_headers
+            original_create_level_1_headers = sdk_headers.create_level_1_headers
+
+            def patched_create_level_1_headers(signer, timestamp, nonce=0, custom_address=None):
+                headers = original_create_level_1_headers(signer, timestamp, nonce)
+                headers["POLY_ADDRESS"] = wallet_address
+                return headers
+
+            sdk_headers.create_level_1_headers = patched_create_level_1_headers
+
+            if auto_derive:
+                client = ClobClient(
+                    host="https://clob.polymarket.com",
+                    key=private_key,
+                    chain_id=137,
+                    signature_type=sig_type,
+                    funder=wallet_address
+                )
+                client.set_api_creds(client.create_or_derive_api_key())
+            else:
+                from py_clob_client_v2 import ApiCreds
+                creds = ApiCreds(api_key=api_key, secret=api_secret, passphrase=api_passphrase)
+                client = ClobClient(
+                    host="https://clob.polymarket.com",
+                    key=private_key,
+                    chain_id=137,
+                    creds=creds,
+                    signature_type=sig_type,
+                    funder=wallet_address
+                )
+        except Exception as e:
+            logger.error(f"Failed to initialize ClobClient for sell: {e}")
+            return {"success": False, "error": f"Client init failed: {e}"}
+
+    import asyncio
+    import httpx
+
+    remaining_shares = shares_to_sell
+    total_sold_shares = 0.0
+    total_proceeds_usd = 0.0
+    execution_prices = []
+    sold_chunks = []
+    max_attempts = 5
+    attempt = 0
+    url = f"https://clob.polymarket.com/book?token_id={token_id}"
+    last_error = "No attempts made"
+
+    while remaining_shares >= 0.5 and attempt < max_attempts:
+        attempt += 1
+        try:
+            async with httpx.AsyncClient() as client_http:
+                resp = await client_http.get(url, timeout=6.0)
+                if resp.status_code != 200:
+                    last_error = f"Failed to fetch orderbook: status {resp.status_code}"
+                    logger.error(f"SELL: Failed to fetch orderbook on attempt {attempt}: status {resp.status_code}")
+                    break
+                book = resp.json()
+                bids = book.get("bids", [])
+                bids = sorted(bids, key=lambda x: float(x.get("price") if isinstance(x, dict) else getattr(x, "price")), reverse=True)
+        except Exception as ob_err:
+            last_error = f"Failed to query orderbook: {ob_err}"
+            logger.error(f"SELL: Failed to query orderbook on attempt {attempt}: {ob_err}")
+            break
+
+        if not bids:
+            last_error = "No bids available in orderbook"
+            logger.warning(f"SELL: No bids available on attempt {attempt}")
+            break
+
+        best_bid = bids[0]
+        bid_p = float(best_bid.get("price") if isinstance(best_bid, dict) else getattr(best_bid, "price"))
+        bid_sz = float(best_bid.get("size") if isinstance(best_bid, dict) else getattr(best_bid, "size"))
+
+        # Safety: don't sell below 1 cent
+        if bid_p < 0.01:
+            last_error = f"Best bid price ${bid_p:.4f} is too low to sell"
+            logger.warning(f"SELL: Best bid price ${bid_p:.4f} too low on attempt {attempt}")
+            break
+
+        # How many shares we can sell into this bid level
+        sell_shares = min(remaining_shares, bid_sz)
+
+        if sell_shares < 0.5:
+            last_error = f"Available bid depth {bid_sz:.2f} shares too thin"
+            logger.warning(f"SELL: Bid depth only {bid_sz:.2f} shares, need at least 0.5 on attempt {attempt}")
+            break
+
+        if dry_run:
+            proceeds = sell_shares * bid_p
+            logger.info(f"SELL (DRY RUN) Attempt {attempt}: Simulated sell of {sell_shares:.2f} shares at ${bid_p:.2f} = ${proceeds:.2f}")
+            total_sold_shares += sell_shares
+            total_proceeds_usd += proceeds
+            remaining_shares -= sell_shares
+            execution_prices.append(bid_p)
+            sold_chunks.append(sell_shares)
+            if remaining_shares < 0.5:
+                break
+            await asyncio.sleep(0.3)
+            continue
+
+        # Real sell order
+        try:
+            from py_clob_client_v2 import OrderArgsV2
+
+            resp_order = client.create_and_post_order(
+                order_args=OrderArgsV2(
+                    token_id=token_id,
+                    price=round(bid_p, 2),
+                    side="SELL",
+                    size=round(sell_shares, 4)
+                )
+            )
+
+            if resp_order and isinstance(resp_order, dict) and resp_order.get("success"):
+                proceeds = sell_shares * bid_p
+                logger.info(f"SELL Attempt {attempt} OK: Sold {sell_shares:.2f} shares at ${bid_p:.2f} = ${proceeds:.2f}")
+                total_sold_shares += sell_shares
+                total_proceeds_usd += proceeds
+                remaining_shares -= sell_shares
+                execution_prices.append(bid_p)
+                sold_chunks.append(sell_shares)
+            else:
+                last_error = f"CLOB sell order failed: {resp_order}"
+                logger.error(f"SELL: Order failed on attempt {attempt}: {resp_order}")
+                break
+        except Exception as e:
+            last_error = f"Exception during sell: {str(e)}"
+            logger.error(f"SELL: Exception on attempt {attempt}: {e}")
+            break
+
+        if remaining_shares >= 0.5:
+            logger.info(f"SELL: Waiting 2s for liquidity... (Remaining: {remaining_shares:.2f} shares)")
+            await asyncio.sleep(2.0)
+
+    if total_sold_shares > 0.0:
+        avg_price = total_proceeds_usd / total_sold_shares
+        return {
+            "success": True,
+            "sold_shares": total_sold_shares,
+            "total_proceeds": total_proceeds_usd,
+            "avg_price": avg_price,
+            "remaining_shares": remaining_shares,
+            "attempts": attempt
+        }
+    else:
+        return {"success": False, "error": last_error}
+
+
+async def close_trade_position(trade_id: int) -> dict:
+    """Closes an open trade position. For real trades, sells on CLOB. For virtual, simulates at best bid."""
+    from datetime import datetime
+    now_str = datetime.now().isoformat()
+    pool = await get_pool()
+    trading_mode = os.getenv("TRADING_MODE", "VIRTUAL").upper()
+
+    async with pool.acquire() as conn:
+        trade = await conn.fetchrow("SELECT * FROM virtual_trades WHERE id = $1 AND status = 'open'", trade_id)
+        if not trade:
+            return {"success": False, "error": "Trade bulunamadı veya zaten kapalı."}
+
+        token_id = trade.get("clob_token_id")
+        shares = trade["shares"]
+        size_usd = trade["size_usd"]
+        is_real = trade.get("trade_type") == "real"
+
+        if is_real and token_id:
+            # Real trade: sell on CLOB
+            sell_result = await place_polymarket_clob_sell_order(
+                token_id=token_id,
+                shares_to_sell=shares,
+                dry_run=False
+            )
+
+            if not sell_result.get("success"):
+                return {
+                    "success": False,
+                    "error": f"Satış başarısız: {sell_result.get('error', 'Bilinmeyen hata')}",
+                    "details": sell_result
+                }
+
+            proceeds = sell_result["total_proceeds"]
+            avg_sell_price = sell_result["avg_price"]
+            sold_shares = sell_result["sold_shares"]
+            profit = proceeds - size_usd
+
+            # If partial fill, only close the sold portion
+            if sell_result.get("remaining_shares", 0) > 0.5:
+                # Partial close: update shares and size proportionally
+                sold_ratio = sold_shares / shares
+                closed_size = size_usd * sold_ratio
+                profit = proceeds - closed_size
+
+                # Update the trade to reflect remaining shares
+                new_shares = shares - sold_shares
+                new_size = size_usd * (1 - sold_ratio)
+                await conn.execute(
+                    "UPDATE virtual_trades SET shares = $1, size_usd = $2 WHERE id = $3",
+                    new_shares, new_size, trade_id
+                )
+
+                return {
+                    "success": True,
+                    "partial": True,
+                    "sold_shares": sold_shares,
+                    "remaining_shares": new_shares,
+                    "proceeds": proceeds,
+                    "profit": profit,
+                    "avg_sell_price": avg_sell_price,
+                    "message": f"Kısmi satış: {sold_shares:.2f}/{shares:.2f} pay satıldı. Kalan: {new_shares:.2f} pay."
+                }
+
+            # Full close
+            status = "won" if profit >= 0 else "lost"
+            await conn.execute("""
+                UPDATE virtual_trades
+                SET status = $1, profit = $2, resolved_at = $3
+                WHERE id = $4
+            """, status, profit, now_str, trade_id)
+
+            return {
+                "success": True,
+                "partial": False,
+                "sold_shares": sold_shares,
+                "proceeds": proceeds,
+                "profit": profit,
+                "avg_sell_price": avg_sell_price,
+                "message": f"Pozisyon kapatıldı: {sold_shares:.2f} pay ${avg_sell_price:.2f} ortalama fiyatla satıldı. {'Kâr' if profit >= 0 else 'Zarar'}: ${abs(profit):.2f}"
+            }
+
+        else:
+            # Virtual trade: simulate sell at best bid price
+            import httpx
+
+            sell_price = trade["entry_price"]  # fallback
+            if token_id:
+                try:
+                    url = f"https://clob.polymarket.com/book?token_id={token_id}"
+                    async with httpx.AsyncClient() as hc:
+                        resp = await hc.get(url, timeout=6.0)
+                        if resp.status_code == 200:
+                            book = resp.json()
+                            bids = book.get("bids", [])
+                            if bids:
+                                bids_sorted = sorted(bids, key=lambda x: float(x.get("price", 0)), reverse=True)
+                                sell_price = float(bids_sorted[0]["price"])
+                except Exception:
+                    pass
+
+            proceeds = shares * sell_price
+            profit = proceeds - size_usd
+            status = "won" if profit >= 0 else "lost"
+
+            # Credit virtual balance
+            await conn.execute(
+                "UPDATE virtual_portfolio SET balance = balance + $1, updated_at = $2 WHERE id = 1",
+                proceeds, now_str
+            )
+
+            # Close the trade
+            await conn.execute("""
+                UPDATE virtual_trades
+                SET status = $1, profit = $2, resolved_at = $3
+                WHERE id = $4
+            """, status, profit, now_str, trade_id)
+
+            return {
+                "success": True,
+                "partial": False,
+                "sold_shares": shares,
+                "proceeds": proceeds,
+                "profit": profit,
+                "avg_sell_price": sell_price,
+                "message": f"Sanal pozisyon kapatıldı: {shares:.2f} pay ${sell_price:.2f} fiyatla satıldı. {'Kâr' if profit >= 0 else 'Zarar'}: ${abs(profit):.2f}"
+            }
+
+
 async def update_trade_post_mortem(trade_id: int, post_mortem: str):
     pool = await get_pool()
     async with pool.acquire() as conn:

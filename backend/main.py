@@ -214,6 +214,42 @@ async def get_virtual_trades():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/trades/{trade_id}/close")
+async def close_trade(trade_id: int):
+    try:
+        result = await database.close_trade_position(trade_id)
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error", "Pozisyon kapatılamadı."))
+
+        # Send Telegram notification about the close
+        try:
+            telegram_token = os.getenv("TELEGRAM_TOKEN")
+            chat_id = os.getenv("CHAT_ID")
+            if telegram_token and chat_id:
+                import httpx
+                profit = result.get("profit", 0)
+                emoji = "💰" if profit >= 0 else "📉"
+                partial_tag = " (Kısmi)" if result.get("partial") else ""
+                msg = (
+                    f"{emoji} <b>Pozisyon Manuel Kapatıldı{partial_tag}</b>\n\n"
+                    f"• Satılan Pay: {result.get('sold_shares', 0):.2f}\n"
+                    f"• Ort. Satış Fiyatı: ${result.get('avg_sell_price', 0):.2f}\n"
+                    f"• Toplam Gelir: ${result.get('proceeds', 0):.2f}\n"
+                    f"• Kâr/Zarar: <b>${profit:+.2f}</b>\n\n"
+                    f"📝 {result.get('message', '')}"
+                )
+                url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
+                async with httpx.AsyncClient() as hc:
+                    await hc.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"}, timeout=5.0)
+        except Exception:
+            pass  # Don't fail the response if Telegram fails
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/portfolio/history")
 async def get_portfolio_history():
     try:
