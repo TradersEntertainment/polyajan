@@ -536,7 +536,7 @@ async def get_polymarket_usdc_balance() -> float:
                 balance = float(res.get("balance", 0.0))
             else:
                 balance = float(getattr(res, "balance", 0.0))
-            return balance
+            return balance / 1000000.0
         except Exception as e:
             logger.error(f"Failed to fetch balance from CLOB API: {e}. Falling back to RPC...")
             
