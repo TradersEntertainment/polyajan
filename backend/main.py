@@ -42,11 +42,10 @@ async def get_logs():
 @app.get("/api/tunings")
 async def get_tunings():
     try:
-        async with database.aiosqlite.connect(database.DB_FILE) as db:
-            db.row_factory = database.aiosqlite.Row
-            async with db.execute("SELECT * FROM parameter_tuning ORDER BY symbol ASC") as cursor:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
+        pool = await database.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM parameter_tuning ORDER BY symbol ASC")
+            return [dict(row) for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-aiosqlite
+asyncpg
 httpx
 pytz
 python-dotenv

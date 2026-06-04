@@ -8,18 +8,31 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'backend
 import database
 
 async def main():
-    print("--- PAPER TRADING ENGINE TEST ---")
+    print("--- POSTGRESQL PAPER TRADING TEST ---")
     
+    # Check if DATABASE_URL is set
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        # Try loading .env just in case
+        from dotenv import load_dotenv
+        load_dotenv()
+        url = os.getenv("DATABASE_URL")
+        
+    if not url:
+        print("[!] ERROR: DATABASE_URL environment variable is not set!")
+        print("Please configure a PostgreSQL connection string to run this validation.")
+        return
+        
     # 1. Initialize DB
     await database.init_db()
-    print("[1] Database initialized.")
+    print("[1] PostgreSQL Database initialized.")
     
     # Reset tables for testing
-    async with database.aiosqlite.connect(database.DB_FILE) as db:
-        await db.execute("DELETE FROM virtual_trades")
-        await db.execute("UPDATE virtual_portfolio SET balance = 1000.0 WHERE id = 1")
-        await db.execute("UPDATE global_settings SET value = 'MODERATE' WHERE key = 'risk_profile'")
-        await db.commit()
+    pool = await database.get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM virtual_trades")
+        await conn.execute("UPDATE virtual_portfolio SET balance = 1000.0 WHERE id = 1")
+        await conn.execute("UPDATE global_settings SET value = 'MODERATE' WHERE key = 'risk_profile'")
     print("[2] Test database reset: Balance set to $1000.00.")
 
     # 3. Get Initial Portfolio
@@ -46,7 +59,7 @@ async def main():
     print(f"[5] After Open Position -> Balance: ${p['balance']:.2f}, Equity: ${p['equity']:.2f}, Open Value: ${p['open_positions_value']:.2f}")
     assert abs(p['balance'] - 900.0) < 0.01
     assert abs(p['equity'] - 1000.0) < 0.01
-    assert abs(p['open_positions_value'] - 100.0) < 0.01 # entries evaluated at purchase probability
+    assert abs(p['open_positions_value'] - 100.0) < 0.01
 
     # 6. Fetch Open Trades
     open_trades = await database.get_open_virtual_trades()
@@ -62,7 +75,7 @@ async def main():
 
     # 8. Check Portfolio after resolution
     p = await database.get_portfolio()
-    expected_payout = (100.00 / 0.65) * 1.00 # shares * payout
+    expected_payout = (100.00 / 0.65) * 1.00
     expected_balance = 900.00 + expected_payout
     print(f"[8] After Resolution -> Balance: ${p['balance']:.2f}, Equity: ${p['equity']:.2f}, Open Value: ${p['open_positions_value']:.2f}")
     assert abs(p['balance'] - expected_balance) < 0.01
@@ -75,7 +88,7 @@ async def main():
     assert perf['win_rate'] == 100.0
     assert abs(perf['total_profit'] - (expected_payout - 100.00)) < 0.01
 
-    print("\n--- ALL TESTS PASSED SUCCESSFULLY! ---")
+    print("\n--- ALL POSTGRESQL TESTS PASSED SUCCESSFULLY! ---")
 
 if __name__ == "__main__":
     asyncio.run(main())
