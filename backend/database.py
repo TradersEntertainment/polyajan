@@ -518,106 +518,142 @@ async def get_polymarket_usdc_balance() -> float:
     return 0.0
 
 async def place_polymarket_clob_order(token_id: str, price: float, size_usd: float, dry_run: bool = False) -> dict:
-    """Places a taker buy order on Polymarket CLOB by matching the best ask price/size immediately."""
-    try:
-        # Fetch Orderbook asks using public API
-        import httpx
-        url = f"https://clob.polymarket.com/book?token_id={token_id}"
-        async with httpx.AsyncClient() as client_http:
-            resp = await client_http.get(url, timeout=6.0)
-            if resp.status_code != 200:
-                return {"success": False, "error": f"Failed to fetch orderbook: status {resp.status_code}"}
-            book = resp.json()
-            asks = book.get("asks", [])
-    except Exception as ob_err:
-        logger.error(f"Failed to query orderbook depth for {token_id}: {ob_err}")
-        return {"success": False, "error": f"Orderbook check failed: {ob_err}"}
-
-    if not asks:
-        logger.error(f"No asks available in orderbook for {token_id}")
-        return {"success": False, "error": "No asks in orderbook"}
-
-    # Get the best ask (first level asks)
-    best_ask = asks[0]
-    ask_p = float(best_ask.get("price") if isinstance(best_ask, dict) else getattr(best_ask, "price"))
-    ask_sz = float(best_ask.get("size") if isinstance(best_ask, dict) else getattr(best_ask, "size"))
-
-    # Check price safety rules:
-    # 1. Under no circumstances buy contracts below 45c (0.45)
-    if ask_p < 0.45:
-        logger.warning(f"Best ask price ${ask_p:.2f} is below $0.45 limit. Rejecting order.")
-        return {"success": False, "error": f"Best ask price ${ask_p:.2f} is below $0.45 limit"}
-
-    # 2. Check upward slippage: limit order at best ask shouldn't exceed 2% of calculated entry price
-    if ask_p > price * 1.02:
-        logger.warning(f"Best ask price ${ask_p:.2f} exceeds 2% slippage limit of calculated price ${price:.2f}")
-        return {"success": False, "error": f"Best ask price ${ask_p:.2f} exceeds slippage limit"}
-
-    # 3. Check downward mismatch: if ask price is over 5% lower than expected, reject due to stale data/wrong token mapping
-    if ask_p < price * 0.95:
-        logger.warning(f"Best ask price ${ask_p:.2f} is more than 5% below calculated price ${price:.2f} (likely stale outcome price or wrong token mapping). Rejecting order.")
-        return {"success": False, "error": f"Best ask price ${ask_p:.2f} deviates downward from calculated price ${price:.2f}"}
-
-    available_usd = ask_sz * ask_p
-    # Scale down size to only buy what is available on the best ask, avoiding leaving residual limit orders
-    target_size_usd = min(size_usd, available_usd)
-    limit_price = ask_p
-
-    if target_size_usd < 2.0:
-        logger.warning(f"Taker order scaled size ${target_size_usd:.2f} below CLOB minimum $2.0 (Available: ${available_usd:.2f})")
-        return {"success": False, "error": f"Insufficient best ask depth (${target_size_usd:.2f} < $2.0)"}
-
-    if dry_run:
-        logger.info(f"CLOB Taker Order (DRY RUN): Simulated fill of ${target_size_usd:.2f} at price ${limit_price:.2f}")
-        return {"success": True, "filled_size": target_size_usd, "price": limit_price}
-
-    # Place real order on Polymarket CLOB
+    """Places a taker buy order on Polymarket CLOB by matching the best ask price/size immediately in a loop."""
     private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
     api_key = os.getenv("POLYMARKET_API_KEY")
     api_secret = os.getenv("POLYMARKET_API_SECRET")
     api_passphrase = os.getenv("POLYMARKET_API_PASSPHRASE")
     sig_type = int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "1"))
     
-    if not (private_key and api_key and api_secret and api_passphrase):
+    if not dry_run and not (private_key and api_key and api_secret and api_passphrase):
         logger.error("Polymarket CLOB credentials missing!")
         return {"success": False, "error": "Credentials missing"}
-        
-    try:
-        from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import ApiKeys, OrderArgs, Side, OrderType
-        
-        creds = ApiKeys(
-            api_key=api_key,
-            secret=api_secret,
-            passphrase=api_passphrase
-        )
-        client = ClobClient(
-            host="https://clob.polymarket.com",
-            key=private_key,
-            chain_id=137,
-            creds=creds,
-            signature_type=sig_type
-        )
-        
-        shares = target_size_usd / limit_price
-        
-        resp = client.create_and_post_order(
-            order_args=OrderArgs(
-                token_id=token_id,
-                price=round(limit_price, 2),
-                side=Side.BUY,
-                size=round(shares, 4)
-            ),
-            order_type=OrderType.GTC
-        )
-        
-        if resp and isinstance(resp, dict) and resp.get("success"):
-            return {"success": True, "order_id": resp.get("orderID"), "filled_size": target_size_usd, "price": limit_price}
-        else:
-            logger.error(f"CLOB order placement failed: {resp}")
-            return {"success": False, "error": resp.get("error") or str(resp)}
-            
-    except Exception as e:
-        logger.error(f"Exception during CLOB order placement: {e}")
-        return {"success": False, "error": str(e)}
 
+    client = None
+    if not dry_run:
+        try:
+            from py_clob_client.client import ClobClient
+            from py_clob_client.clob_types import ApiKeys
+            creds = ApiKeys(
+                api_key=api_key,
+                secret=api_secret,
+                passphrase=api_passphrase
+            )
+            client = ClobClient(
+                host="https://clob.polymarket.com",
+                key=private_key,
+                chain_id=137,
+                creds=creds,
+                signature_type=sig_type
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize ClobClient: {e}")
+            return {"success": False, "error": f"Client init failed: {e}"}
+
+    import asyncio
+    import httpx
+    
+    remaining_size_usd = size_usd
+    total_filled_usd = 0.0
+    execution_prices = []
+    filled_sizes = []
+    max_attempts = 5
+    attempt = 0
+    url = f"https://clob.polymarket.com/book?token_id={token_id}"
+
+    while remaining_size_usd >= 2.0 and attempt < max_attempts:
+        attempt += 1
+        try:
+            # Fetch fresh orderbook asks
+            async with httpx.AsyncClient() as client_http:
+                resp = await client_http.get(url, timeout=6.0)
+                if resp.status_code != 200:
+                    logger.error(f"Failed to fetch orderbook on attempt {attempt}: status {resp.status_code}")
+                    break
+                book = resp.json()
+                asks = book.get("asks", [])
+        except Exception as ob_err:
+            logger.error(f"Failed to query orderbook depth on attempt {attempt}: {ob_err}")
+            break
+
+        if not asks:
+            logger.warning(f"No asks available in orderbook on attempt {attempt}")
+            break
+
+        # Get the best ask
+        best_ask = asks[0]
+        ask_p = float(best_ask.get("price") if isinstance(best_ask, dict) else getattr(best_ask, "price"))
+        ask_sz = float(best_ask.get("size") if isinstance(best_ask, dict) else getattr(best_ask, "size"))
+
+        # Check price safety rules:
+        # 1. Under no circumstances buy contracts below 45c (0.45)
+        if ask_p < 0.45:
+            logger.warning(f"Best ask price ${ask_p:.2f} is below $0.45 limit. Rejecting order on attempt {attempt}.")
+            break
+
+        # 2. Check upward slippage: limit order at best ask shouldn't exceed 2% of calculated entry price
+        if ask_p > price * 1.02:
+            logger.warning(f"Best ask price ${ask_p:.2f} exceeds 2% slippage limit of calculated price ${price:.2f} on attempt {attempt}.")
+            break
+
+        # 3. Check downward mismatch: if ask price is over 5% lower than expected, reject due to stale data/wrong token mapping
+        if ask_p < price * 0.95:
+            logger.warning(f"Best ask price ${ask_p:.2f} is more than 5% below calculated price ${price:.2f} (likely stale data or wrong token mapping). Rejecting on attempt {attempt}.")
+            break
+
+        available_usd = ask_sz * ask_p
+        fill_size_usd = min(remaining_size_usd, available_usd)
+
+        # Scale down to what is available. If less than $2.0, we cannot place the order.
+        if fill_size_usd < 2.0:
+            logger.warning(f"Taker order attempt {attempt} scaled size ${fill_size_usd:.2f} below CLOB minimum $2.0 (Available depth: ${available_usd:.2f})")
+            break
+
+        if dry_run:
+            logger.info(f"CLOB Taker Order Loop (DRY RUN) Attempt {attempt}: Simulated fill of ${fill_size_usd:.2f} at price ${ask_p:.2f}")
+            total_filled_usd += fill_size_usd
+            remaining_size_usd -= fill_size_usd
+            execution_prices.append(ask_p)
+            filled_sizes.append(fill_size_usd)
+            if remaining_size_usd < 2.0:
+                break
+            await asyncio.sleep(0.5) # short delay in dry-run simulation
+            continue
+
+        # Real order placement
+        try:
+            from py_clob_client.clob_types import OrderArgs, Side, OrderType
+            shares = fill_size_usd / ask_p
+            
+            resp_order = client.create_and_post_order(
+                order_args=OrderArgs(
+                    token_id=token_id,
+                    price=round(ask_p, 2),
+                    side=Side.BUY,
+                    size=round(shares, 4)
+                ),
+                order_type=OrderType.GTC
+            )
+            
+            if resp_order and isinstance(resp_order, dict) and resp_order.get("success"):
+                logger.info(f"CLOB Taker Order Loop Attempt {attempt} Successful: Filled ${fill_size_usd:.2f} at price ${ask_p:.2f}")
+                total_filled_usd += fill_size_usd
+                remaining_size_usd -= fill_size_usd
+                execution_prices.append(ask_p)
+                filled_sizes.append(fill_size_usd)
+            else:
+                logger.error(f"CLOB order placement failed on attempt {attempt}: {resp_order}")
+                break
+        except Exception as e:
+            logger.error(f"Exception during CLOB order placement on attempt {attempt}: {e}")
+            break
+
+        if remaining_size_usd >= 2.0:
+            logger.info(f"Waiting 2.5 seconds for liquidity replenishment... (Remaining to buy: ${remaining_size_usd:.2f})")
+            await asyncio.sleep(2.5)
+
+    if total_filled_usd > 0.0:
+        avg_price = sum(p * s for p, s in zip(execution_prices, filled_sizes)) / total_filled_usd
+        return {"success": True, "filled_size": total_filled_usd, "price": avg_price}
+    else:
+        return {"success": False, "error": "No fills completed"}
