@@ -699,6 +699,13 @@ async def run_autonomous_scan_cycle():
                 token_id = m["up_token_id"] if direction == "UP" else m["down_token_id"]
                 trade_dir = f"OPEN_{direction}" if bet_type == "open" else direction
                 
+                # Turkey time check: if before 21:00 TRT and the trade is not very guaranteed (quant_prob < 0.90), skip execution
+                tr_tz = pytz.timezone("Europe/Istanbul")
+                now_tr = datetime.now(tr_tz)
+                if now_tr.hour < 21 and quant_prob < 0.90:
+                    logger.info(f"AI Agent: Skipping trade candidate {symbol} {trade_dir} before 21:00 TRT (quant_prob {quant_prob:.2f} < 0.90)")
+                    continue
+                
                 trade_candidates.append({
                     "symbol": symbol,
                     "direction": trade_dir,
