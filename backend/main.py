@@ -1,5 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
+import os
 import database
 import pyth_client
 import agent_coordinator
@@ -68,3 +71,21 @@ async def get_virtual_trades():
         return await database.get_virtual_trades()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- Serve Frontend Static Files ---
+frontend_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/dist"))
+
+@app.exception_handler(404)
+async def not_found_exception_handler(request, exc):
+    # API endpoints should return a standard JSON 404
+    if request.url.path.startswith("/api/"):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    # React SPA routing fallback
+    index_path = os.path.join(frontend_dist, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+# Mount the static files at root
+if os.path.exists(frontend_dist):
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")

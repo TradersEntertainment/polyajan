@@ -4,3 +4,4 @@ aiosqlite
 httpx
 pytz
 python-dotenv
+aiofiles
