@@ -644,7 +644,7 @@ async def run_autonomous_scan_cycle():
         # Perform backtests for both UP and DOWN outcomes
         for direction in ["UP", "DOWN"]:
             poly_prob = up_price if direction == "UP" else down_price
-            if poly_prob <= 0.01:
+            if poly_prob < 0.45:  # Strict user rule: do not buy contracts priced below 45c (0.45)
                 continue
  
             if bet_type == "open":
@@ -762,7 +762,7 @@ async def run_autonomous_scan_cycle():
                         size_to_trade = remaining_budget
                             
                     if size_to_trade >= 2.0:
-                        success = await database.open_virtual_trade(
+                        spent = await database.open_virtual_trade(
                             symbol=cand["symbol"],
                             direction=cand["direction"],
                             ref_price=cand["ref_price"],
@@ -771,16 +771,16 @@ async def run_autonomous_scan_cycle():
                             polymarket_slug=cand["slug"],
                             clob_token_id=cand["token_id"]
                         )
-                        if success:
-                            remaining_budget -= size_to_trade
-                            shares = size_to_trade / cand["entry_price"]
+                        if spent > 0.0:
+                            remaining_budget -= spent
+                            shares = spent / cand["entry_price"]
                             await database.add_agent_log(
                                 "Decision",
                                 f"Gerçek İşlem Açıldı (Lottery Capped): {cand['symbol']} {cand['direction']}" if is_lottery else f"Gerçek İşlem Açıldı: {cand['symbol']} {cand['direction']}",
-                                f"Pozisyon açıldı: {shares:.2f} adet hisse ${cand['entry_price']:.2f} fiyattan satın alındı (Toplam: ${size_to_trade:.2f}).\n"
+                                f"Pozisyon açıldı: {shares:.2f} adet hisse ${cand['entry_price']:.2f} fiyattan satın alındı (Toplam: ${spent:.2f}).\n"
                                 f"Risk Profili: {risk_profile}. Referans Fiyat: ${cand['ref_price']:.2f}."
                             )
-                            logger.info(f"AI Agent: Real trade opened: {cand['symbol']} {cand['direction']} (Size: ${size_to_trade:.2f}, Lottery: {is_lottery})")
+                            logger.info(f"AI Agent: Real trade opened: {cand['symbol']} {cand['direction']} (Size: ${spent:.2f}, Lottery: {is_lottery})")
         else:
             # Virtual trading mode logic (uses standard trade_size_usd per trade, but caps at remaining balance)
             for cand in new_candidates:
@@ -794,7 +794,7 @@ async def run_autonomous_scan_cycle():
                     else:
                         continue
                         
-                success = await database.open_virtual_trade(
+                spent = await database.open_virtual_trade(
                     symbol=cand["symbol"],
                     direction=cand["direction"],
                     ref_price=cand["ref_price"],
@@ -803,15 +803,15 @@ async def run_autonomous_scan_cycle():
                     polymarket_slug=cand["slug"],
                     clob_token_id=cand["token_id"]
                 )
-                if success:
-                    shares = size_to_trade / cand["entry_price"]
+                if spent > 0.0:
+                    shares = spent / cand["entry_price"]
                     await database.add_agent_log(
                         "Decision",
                         f"Sanal İşlem Açıldı: {cand['symbol']} {cand['direction']}",
-                        f"Sanal pozisyon açıldı: {shares:.2f} adet hisse ${cand['entry_price']:.2f} fiyattan satın alındı (Toplam: ${size_to_trade:.2f}).\n"
+                        f"Sanal pozisyon açıldı: {shares:.2f} adet hisse ${cand['entry_price']:.2f} fiyattan satın alındı (Toplam: ${spent:.2f}).\n"
                         f"Risk Profili: {risk_profile}. Referans Fiyat: ${cand['ref_price']:.2f}."
                     )
-                    logger.info(f"AI Agent: Virtual trade opened: {cand['symbol']} {cand['direction']} (Size: ${size_to_trade:.2f})")
+                    logger.info(f"AI Agent: Virtual trade opened: {cand['symbol']} {cand['direction']} (Size: ${spent:.2f})")
                         
     # Record portfolio value after scan cycle completes
     await database.record_portfolio_history()

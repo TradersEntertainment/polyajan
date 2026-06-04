@@ -67,7 +67,32 @@ async def get_portfolio_status():
 @app.get("/api/trades/virtual")
 async def get_virtual_trades():
     try:
-        return await database.get_virtual_trades()
+        trades = await database.get_virtual_trades()
+        
+        # Inject live best bid price for open positions
+        import asyncio
+        import httpx
+        
+        async def populate_live_price(t):
+            if t["status"] == "open" and t.get("clob_token_id"):
+                token_id = t["clob_token_id"]
+                url = f"https://clob.polymarket.com/book?token_id={token_id}"
+                try:
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.get(url, timeout=6.0)
+                        if resp.status_code == 200:
+                            book = resp.json()
+                            bids = book.get("bids", [])
+                            if bids:
+                                t["current_price"] = float(bids[0]["price"])
+                except Exception:
+                    pass
+                    
+        open_trades = [t for t in trades if t["status"] == "open"]
+        if open_trades:
+            await asyncio.gather(*(populate_live_price(t) for t in open_trades))
+            
+        return trades
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

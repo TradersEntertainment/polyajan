@@ -261,14 +261,41 @@ async def get_portfolio() -> dict:
                     
         # Calculate open positions value
         open_positions_value = 0.0
-        open_trades = await conn.fetch("SELECT symbol, direction, shares, entry_price FROM virtual_trades WHERE status = 'open'")
-        for t in open_trades:
-            sig_row = await conn.fetchrow(
-                "SELECT polymarket_price FROM quant_signals WHERE symbol = $1 AND direction = $2 AND status = 'active' LIMIT 1",
-                t["symbol"], t["direction"]
-            )
-            live_prob = sig_row["polymarket_price"] if sig_row else t["entry_price"]
-            open_positions_value += t["shares"] * live_prob
+        open_trades = await conn.fetch("SELECT symbol, direction, shares, entry_price, clob_token_id FROM virtual_trades WHERE status = 'open'")
+        
+        import httpx
+        import asyncio
+        
+        async def get_best_bid(token_id):
+            if not token_id:
+                return None
+            url = f"https://clob.polymarket.com/book?token_id={token_id}"
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(url, timeout=4.0)
+                    if resp.status_code == 200:
+                        book = resp.json()
+                        bids = book.get("bids", [])
+                        if bids:
+                            return float(bids[0]["price"])
+            except Exception:
+                pass
+            return None
+
+        if open_trades:
+            tokens = [t["clob_token_id"] for t in open_trades]
+            best_bids = await asyncio.gather(*(get_best_bid(tok) for tok in tokens))
+            
+            for idx, t in enumerate(open_trades):
+                live_price = best_bids[idx]
+                if live_price is None:
+                    # Fallback to active signal price or entry price
+                    sig_row = await conn.fetchrow(
+                        "SELECT polymarket_price FROM quant_signals WHERE symbol = $1 AND direction = $2 AND status = 'active' LIMIT 1",
+                        t["symbol"], t["direction"]
+                    )
+                    live_price = sig_row["polymarket_price"] if sig_row else t["entry_price"]
+                open_positions_value += t["shares"] * live_price
                 
         equity = balance + open_positions_value
         return {
@@ -278,6 +305,7 @@ async def get_portfolio() -> dict:
             "risk_profile": risk_profile,
             "risk_justification": risk_justification
         }
+
 
 async def update_balance(amount: float):
     from datetime import datetime
@@ -308,8 +336,8 @@ async def update_risk_profile(profile: str, justification: str):
             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
         """, justification, now_str)
 
-async def open_virtual_trade(symbol: str, direction: str, ref_price: float, entry_price: float, size_usd: float, polymarket_slug: str = None, clob_token_id: str = None) -> bool:
-    """Opens a virtual (or real) trade if balance is sufficient."""
+async def open_virtual_trade(symbol: str, direction: str, ref_price: float, entry_price: float, size_usd: float, polymarket_slug: str = None, clob_token_id: str = None) -> float:
+    """Opens a virtual (or real) trade if balance is sufficient. Returns actual size spent (float)."""
     from datetime import datetime
     now_str = datetime.now().isoformat()
     pool = await get_pool()
@@ -325,32 +353,49 @@ async def open_virtual_trade(symbol: str, direction: str, ref_price: float, entr
             
         if balance < size_usd:
             logger.warning(f"Insufficient funds for trade {symbol} {direction}: Balance {balance} < {size_usd}")
-            return False
+            return 0.0
             
-        # Place real order on Polymarket if mode is REAL
+        # Check if the calculated entry price is below 0.45 (strict user limit)
+        if entry_price < 0.45:
+            logger.warning(f"Calculated entry price ${entry_price:.2f} is below $0.45 limit. Rejecting trade.")
+            return 0.0
+
+        # Place real or dry-run order on Polymarket
         actual_size_usd = size_usd
-        if trading_mode == "REAL":
-            if not clob_token_id:
-                logger.error(f"Cannot place real order for {symbol} {direction} without clob_token_id!")
-                return False
-            order_res = await place_polymarket_clob_order(clob_token_id, entry_price, size_usd)
+        actual_entry_price = entry_price
+        
+        if clob_token_id:
+            dry_run = (trading_mode != "REAL")
+            order_res = await place_polymarket_clob_order(clob_token_id, entry_price, size_usd, dry_run=dry_run)
             if not order_res.get("success"):
-                logger.error(f"Real Polymarket order failed: {order_res.get('error')}")
-                return False
+                logger.error(f"{'Simulated' if dry_run else 'Real'} Polymarket order failed: {order_res.get('error')}")
+                return 0.0
             actual_size_usd = order_res.get("filled_size", size_usd)
+            actual_entry_price = order_res.get("price", entry_price)
+            
+            # Check if actual executed price is below 0.45
+            if actual_entry_price < 0.45:
+                logger.warning(f"Actual executed price ${actual_entry_price:.2f} is below $0.45 limit. Rejecting trade.")
+                return 0.0
         else:
+            if trading_mode == "REAL":
+                logger.error(f"Cannot place real order for {symbol} {direction} without clob_token_id!")
+                return 0.0
+
+        if trading_mode != "REAL":
             # Deduct balance (simulated)
-            await conn.execute("UPDATE virtual_portfolio SET balance = balance - $1, updated_at = $2 WHERE id = 1", size_usd, now_str)
+            await conn.execute("UPDATE virtual_portfolio SET balance = balance - $1, updated_at = $2 WHERE id = 1", actual_size_usd, now_str)
         
         # Insert trade into DB
-        shares = actual_size_usd / entry_price
+        shares = actual_size_usd / actual_entry_price
         trade_type = 'real' if trading_mode == "REAL" else 'virtual'
         await conn.execute("""
             INSERT INTO virtual_trades (symbol, direction, ref_price, entry_price, size_usd, shares, status, created_at, polymarket_slug, clob_token_id, trade_type)
             VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9, $10)
-        """, symbol.upper(), direction, ref_price, entry_price, actual_size_usd, shares, now_str, polymarket_slug, clob_token_id, trade_type)
+        """, symbol.upper(), direction, ref_price, actual_entry_price, actual_size_usd, shares, now_str, polymarket_slug, clob_token_id, trade_type)
         
-        return True
+        return actual_size_usd
+
 
 async def get_open_virtual_trades() -> list:
     pool = await get_pool()
@@ -472,8 +517,61 @@ async def get_polymarket_usdc_balance() -> float:
         
     return 0.0
 
-async def place_polymarket_clob_order(token_id: str, price: float, size_usd: float) -> dict:
-    """Places a real buy order on Polymarket CLOB with orderbook depth check."""
+async def place_polymarket_clob_order(token_id: str, price: float, size_usd: float, dry_run: bool = False) -> dict:
+    """Places a taker buy order on Polymarket CLOB by matching the best ask price/size immediately."""
+    try:
+        # Fetch Orderbook asks using public API
+        import httpx
+        url = f"https://clob.polymarket.com/book?token_id={token_id}"
+        async with httpx.AsyncClient() as client_http:
+            resp = await client_http.get(url, timeout=6.0)
+            if resp.status_code != 200:
+                return {"success": False, "error": f"Failed to fetch orderbook: status {resp.status_code}"}
+            book = resp.json()
+            asks = book.get("asks", [])
+    except Exception as ob_err:
+        logger.error(f"Failed to query orderbook depth for {token_id}: {ob_err}")
+        return {"success": False, "error": f"Orderbook check failed: {ob_err}"}
+
+    if not asks:
+        logger.error(f"No asks available in orderbook for {token_id}")
+        return {"success": False, "error": "No asks in orderbook"}
+
+    # Get the best ask (first level asks)
+    best_ask = asks[0]
+    ask_p = float(best_ask.get("price") if isinstance(best_ask, dict) else getattr(best_ask, "price"))
+    ask_sz = float(best_ask.get("size") if isinstance(best_ask, dict) else getattr(best_ask, "size"))
+
+    # Check price safety rules:
+    # 1. Under no circumstances buy contracts below 45c (0.45)
+    if ask_p < 0.45:
+        logger.warning(f"Best ask price ${ask_p:.2f} is below $0.45 limit. Rejecting order.")
+        return {"success": False, "error": f"Best ask price ${ask_p:.2f} is below $0.45 limit"}
+
+    # 2. Check upward slippage: limit order at best ask shouldn't exceed 2% of calculated entry price
+    if ask_p > price * 1.02:
+        logger.warning(f"Best ask price ${ask_p:.2f} exceeds 2% slippage limit of calculated price ${price:.2f}")
+        return {"success": False, "error": f"Best ask price ${ask_p:.2f} exceeds slippage limit"}
+
+    # 3. Check downward mismatch: if ask price is over 5% lower than expected, reject due to stale data/wrong token mapping
+    if ask_p < price * 0.95:
+        logger.warning(f"Best ask price ${ask_p:.2f} is more than 5% below calculated price ${price:.2f} (likely stale outcome price or wrong token mapping). Rejecting order.")
+        return {"success": False, "error": f"Best ask price ${ask_p:.2f} deviates downward from calculated price ${price:.2f}"}
+
+    available_usd = ask_sz * ask_p
+    # Scale down size to only buy what is available on the best ask, avoiding leaving residual limit orders
+    target_size_usd = min(size_usd, available_usd)
+    limit_price = ask_p
+
+    if target_size_usd < 2.0:
+        logger.warning(f"Taker order scaled size ${target_size_usd:.2f} below CLOB minimum $2.0 (Available: ${available_usd:.2f})")
+        return {"success": False, "error": f"Insufficient best ask depth (${target_size_usd:.2f} < $2.0)"}
+
+    if dry_run:
+        logger.info(f"CLOB Taker Order (DRY RUN): Simulated fill of ${target_size_usd:.2f} at price ${limit_price:.2f}")
+        return {"success": True, "filled_size": target_size_usd, "price": limit_price}
+
+    # Place real order on Polymarket CLOB
     private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
     api_key = os.getenv("POLYMARKET_API_KEY")
     api_secret = os.getenv("POLYMARKET_API_SECRET")
@@ -501,49 +599,8 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
             signature_type=sig_type
         )
         
-        # 1. Fetch Orderbook depth
-        max_price = price * 1.02  # Max 2% slippage tolerance
-        target_size_usd = size_usd
-        limit_price = price
-        
-        try:
-            book = client.get_orderbook(token_id)
-            if isinstance(book, dict):
-                asks = book.get("asks", [])
-            else:
-                asks = getattr(book, "asks", [])
-                
-            cumulative_val = 0.0
-            last_price = price
-            
-            for ask in asks:
-                ask_p = float(ask.get("price") if isinstance(ask, dict) else getattr(ask, "price"))
-                ask_sz = float(ask.get("size") if isinstance(ask, dict) else getattr(ask, "size"))
-                
-                if ask_p <= max_price:
-                    cumulative_val += ask_sz * ask_p
-                    last_price = ask_p
-                    if cumulative_val >= size_usd:
-                        break
-            
-            if cumulative_val < size_usd:
-                # Insufficient depth at target price. Let's scale down size to available cumulative value
-                logger.warning(f"Orderbook depth too thin for {token_id}. Available within 2% slippage: ${cumulative_val:.2f} < Requested: ${size_usd:.2f}")
-                target_size_usd = cumulative_val
-                limit_price = last_price
-                
-        except Exception as ob_err:
-            logger.error(f"Failed to query orderbook depth for {token_id}, defaulting to standard limit order: {ob_err}")
-            target_size_usd = size_usd
-            limit_price = price
-            
-        if target_size_usd < 2.0:
-            logger.error(f"Cannot place order for {token_id}. Size after depth check ${target_size_usd:.2f} is below CLOB $2.0 minimum.")
-            return {"success": False, "error": f"Insufficient orderbook depth (${target_size_usd:.2f} < $2.0)"}
-            
         shares = target_size_usd / limit_price
         
-        # Post order (GTC - Good Till Cancelled)
         resp = client.create_and_post_order(
             order_args=OrderArgs(
                 token_id=token_id,
@@ -555,7 +612,7 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
         )
         
         if resp and isinstance(resp, dict) and resp.get("success"):
-            return {"success": True, "order_id": resp.get("orderID"), "filled_size": target_size_usd}
+            return {"success": True, "order_id": resp.get("orderID"), "filled_size": target_size_usd, "price": limit_price}
         else:
             logger.error(f"CLOB order placement failed: {resp}")
             return {"success": False, "error": resp.get("error") or str(resp)}
@@ -563,3 +620,4 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
     except Exception as e:
         logger.error(f"Exception during CLOB order placement: {e}")
         return {"success": False, "error": str(e)}
+

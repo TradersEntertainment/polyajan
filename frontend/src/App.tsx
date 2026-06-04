@@ -75,6 +75,7 @@ interface VirtualTrade {
   polymarket_slug: string | null;
   created_at: string;
   resolved_at: string | null;
+  current_price?: number;
 }
 
 function App() {
@@ -757,9 +758,9 @@ function App() {
                   ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {filteredVirtualTrades.filter(t => t.status === 'open').map((trade) => {
-                        // Find live price from signals if available
+                        // Find live price from backend's current_price or active signals
                         const sig = signals.find(s => s.symbol === trade.symbol && s.direction === trade.direction && s.status === 'active');
-                        const livePrice = sig?.polymarket_price ?? trade.entry_price;
+                        const livePrice = trade.current_price ?? sig?.polymarket_price ?? trade.entry_price;
                         const currentValue = trade.shares * livePrice;
                         const uPnL = currentValue - trade.size_usd;
 
