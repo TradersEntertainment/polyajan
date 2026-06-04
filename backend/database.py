@@ -526,27 +526,40 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
     api_passphrase = os.getenv("POLYMARKET_API_PASSPHRASE")
     sig_type = int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "1"))
     
-    if not dry_run and not (private_key and api_key and api_secret and api_passphrase):
-        logger.error("Polymarket CLOB credentials missing!")
-        return {"success": False, "error": "Credentials missing"}
+    if not dry_run:
+        if not private_key:
+            logger.error("Polymarket cüzdan Private Key eksik!")
+            return {"success": False, "error": "Private Key missing"}
+        auto_derive = not (api_key and api_secret and api_passphrase)
 
     client = None
     if not dry_run:
         try:
             from py_clob_client.client import ClobClient
-            from py_clob_client.clob_types import ApiKeys
-            creds = ApiKeys(
-                api_key=api_key,
-                secret=api_secret,
-                passphrase=api_passphrase
-            )
-            client = ClobClient(
-                host="https://clob.polymarket.com",
-                key=private_key,
-                chain_id=137,
-                creds=creds,
-                signature_type=sig_type
-            )
+            
+            if auto_derive:
+                logger.info("Polymarket CLOB L2 API credentials not provided. Deriving them automatically from Private Key...")
+                client = ClobClient(
+                    host="https://clob.polymarket.com",
+                    key=private_key,
+                    chain_id=137,
+                    signature_type=sig_type
+                )
+                client.set_api_creds(client.create_or_derive_api_key())
+            else:
+                from py_clob_client.clob_types import ApiKeys
+                creds = ApiKeys(
+                    api_key=api_key,
+                    secret=api_secret,
+                    passphrase=api_passphrase
+                )
+                client = ClobClient(
+                    host="https://clob.polymarket.com",
+                    key=private_key,
+                    chain_id=137,
+                    creds=creds,
+                    signature_type=sig_type
+                )
         except Exception as e:
             logger.error(f"Failed to initialize ClobClient: {e}")
             return {"success": False, "error": f"Client init failed: {e}"}
