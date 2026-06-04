@@ -533,8 +533,7 @@ async def run_autonomous_scan_cycle():
             # Filter: We look for opportunities where:
             # - Real quant probability of winning is high (e.g. >= 85%) AND expected yield meets the minimum yield
             # - OR there is a significant pricing edge (e.g. real probability is X% higher than Polymarket price)
-            # - AND the absolute win probability is at least min_win_prob to avoid low-probability lottery bets
-            is_significant_edge = (edge >= required_edge_threshold) and (quant_prob >= min_win_prob)
+            is_significant_edge = edge >= required_edge_threshold
             is_high_prob_yield = (quant_prob >= 0.88) and (expected_yield >= min_yield)
             
             if is_significant_edge or is_high_prob_yield:
@@ -576,7 +575,8 @@ async def run_autonomous_scan_cycle():
                     "entry_price": poly_prob,
                     "edge": edge,
                     "slug": slug,
-                    "token_id": token_id
+                    "token_id": token_id,
+                    "quant_probability": quant_prob
                 })
                 
     # 5. Execute trades from highest edge to lowest edge to maximize capital usage
@@ -605,14 +605,23 @@ async def run_autonomous_scan_cycle():
                     if remaining_budget < 2.0:
                         break
                     
+                    # Check if it is a lottery bet (win probability below risk profile threshold)
+                    is_lottery = cand.get("quant_probability", 1.0) < min_win_prob
+                    
                     is_last = (idx == len(new_candidates) - 1)
-                    if is_last:
+                    if is_last and not is_lottery:
                         size_to_trade = remaining_budget
                     else:
                         share = remaining_budget / (len(new_candidates) - idx)
                         size_to_trade = max(2.0, share)
-                        if size_to_trade > remaining_budget:
-                            size_to_trade = remaining_budget
+                        
+                    # If lottery, cap at max 3% of total equity
+                    if is_lottery:
+                        max_lottery_size = equity * 0.03
+                        size_to_trade = min(size_to_trade, max_lottery_size)
+                        
+                    if size_to_trade > remaining_budget:
+                        size_to_trade = remaining_budget
                             
                     if size_to_trade >= 2.0:
                         success = await database.open_virtual_trade(
@@ -629,11 +638,11 @@ async def run_autonomous_scan_cycle():
                             shares = size_to_trade / cand["entry_price"]
                             await database.add_agent_log(
                                 "Decision",
-                                f"Gerçek İşlem Açıldı: {cand['symbol']} {cand['direction']}",
+                                f"Gerçek İşlem Açıldı (Lottery Capped): {cand['symbol']} {cand['direction']}" if is_lottery else f"Gerçek İşlem Açıldı: {cand['symbol']} {cand['direction']}",
                                 f"Pozisyon açıldı: {shares:.2f} adet hisse ${cand['entry_price']:.2f} fiyattan satın alındı (Toplam: ${size_to_trade:.2f}).\n"
                                 f"Risk Profili: {risk_profile}. Referans Fiyat: ${cand['ref_price']:.2f}."
                             )
-                            logger.info(f"AI Agent: Real trade opened: {cand['symbol']} {cand['direction']} (Size: ${size_to_trade:.2f})")
+                            logger.info(f"AI Agent: Real trade opened: {cand['symbol']} {cand['direction']} (Size: ${size_to_trade:.2f}, Lottery: {is_lottery})")
         else:
             # Virtual trading mode logic (uses standard trade_size_usd per trade, but caps at remaining balance)
             for cand in new_candidates:
