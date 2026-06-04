@@ -299,6 +299,17 @@ async def run_parameter_tuning_agent(symbol: str, bet_type: str):
         except Exception as e:
             variations[days] = f"Error: {e}"
 
+    # 2.5. Fetch recent trade outcomes & post-mortems for this symbol
+    recent_trades_context = ""
+    try:
+        recent_trades = await database.get_recent_resolved_trades_with_feedback(symbol=symbol, limit=3)
+        if recent_trades:
+            recent_trades_context = "\nRecent Trade Outcomes and Post-Mortems for Reinforcement:\n"
+            for t in recent_trades:
+                recent_trades_context += f"- Direction: {t['direction']}, Ref Price: ${t['ref_price']:.2f}, Purchase Price: ${t['entry_price']:.2f}, Status: {t['status'].upper()}, Feedback: {t.get('post_mortem', '')}\n"
+    except Exception as fe:
+        logger.debug(f"Failed to fetch trade feedback context: {fe}")
+
     # 3. Call LLM to optimize parameters
     system_prompt = (
         "You are an elite quantitative trading optimizer. Your job is to analyze historical "
@@ -321,7 +332,8 @@ async def run_parameter_tuning_agent(symbol: str, bet_type: str):
         f"Backtest Variations:\n"
         f"- 30-day: {variations.get(30)}\n"
         f"- 60-day: {variations.get(60)}\n"
-        f"- 90-day: {variations.get(90)}\n\n"
+        f"- 90-day: {variations.get(90)}\n"
+        f"{recent_trades_context}\n"
         "Please optimize these settings and output the JSON block."
     )
 
@@ -375,6 +387,17 @@ async def run_portfolio_risk_agent():
         total_profit = perf["total_profit"]
         total_trades = perf["total_trades"]
         
+        # Fetch recent resolved trades with feedback context
+        recent_trades_feedback = ""
+        try:
+            recent_trades = await database.get_recent_resolved_trades_with_feedback(limit=5)
+            if recent_trades:
+                recent_trades_feedback = "\nRecent Resolved Trades Post-Mortem Feedback:\n"
+                for t in recent_trades:
+                    recent_trades_feedback += f"- Asset: {t['symbol']}, Dir: {t['direction']}, Status: {t['status'].upper()}, PnL: ${t['profit']:+.2f}, Feedback: {t.get('post_mortem', '')}\n"
+        except Exception as fe:
+            logger.debug(f"Failed to fetch CRO portfolio feedback context: {fe}")
+
         system_prompt = (
             "You are the Chief Risk Officer (CRO) of an elite quantitative hedge fund. "
             "Your job is to analyze our virtual paper trading performance and determine the optimal global risk profile "
@@ -393,7 +416,8 @@ async def run_portfolio_risk_agent():
             f"Portfolio Equity (with open positions): ${equity:.2f}\n"
             f"Net Profit of Recent Trades: ${total_profit:+.2f}\n"
             f"Win Rate (Last {total_trades} trades): {win_rate:.1f}%\n"
-            f"Active Risk Profile: {current_risk_profile}\n\n"
+            f"Active Risk Profile: {current_risk_profile}\n"
+            f"{recent_trades_feedback}\n"
             "Please evaluate these metrics and output the JSON block."
         )
         
@@ -427,6 +451,50 @@ async def run_portfolio_risk_agent():
         
     except Exception as e:
         logger.error(f"Failed to run portfolio risk agent: {e}")
+
+async def run_trade_post_mortem(trade_id: int, symbol: str, direction: str, ref_price: float, entry_price: float, status: str, final_price: float):
+    """
+    Runs an LLM agent to analyze a resolved trade's outcome and generate a feedback memory.
+    """
+    logger.info(f"AI Agent: Running Post-Mortem Analysis for resolved trade {trade_id} ({symbol} {direction})")
+    
+    system_prompt = (
+        "You are a Senior Quantitative Analyst doing a post-mortem review of a completed prediction market trade.\n\n"
+        "Your goal is to write a highly concise, professional analysis (in Turkish, max 2-3 sentences) explaining "
+        "why the trade won or lost, and whether the market regime or parameter settings (lookback, yield, edge) "
+        "played a role. Do not repeat the inputs, focus on the structural cause of the outcome.\n\n"
+        "You must respond ONLY with a raw JSON object containing these keys:\n"
+        "- 'post_mortem': string (concise explanation in Turkish)\n"
+        "- 'key_takeaway': string (one-sentence takeaway/rule for parameter tuning)"
+    )
+    
+    user_prompt = (
+        f"Asset: {symbol}\n"
+        f"Bet Direction: {direction}\n"
+        f"Reference Price: ${ref_price:.2f}\n"
+        f"Entry Purchase Price: ${entry_price:.2f} (Implied probability: {entry_price * 100:.1f}%)\n"
+        f"Trade Resolution Status: {status.upper()}\n"
+        f"Final Spot/Open/Close Price: ${final_price:.2f}\n\n"
+        "Analyze the structural reason of this result and output the JSON block."
+    )
+    
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+    
+    response_text = await call_groq_api(messages)
+    try:
+        decision = json.loads(response_text)
+        analysis = decision.get("post_mortem", "Analiz yapılamadı.")
+        takeaway = decision.get("key_takeaway", "")
+        full_feedback = f"{analysis} Ana çıkarım: {takeaway}"
+        
+        # Save to database
+        await database.update_trade_post_mortem(trade_id, full_feedback)
+        logger.info(f"AI Agent: Post-Mortem feedback saved for trade {trade_id}: {full_feedback}")
+    except Exception as e:
+        logger.error(f"Failed to process trade post-mortem: {e}. Response was: {response_text}")
 
 async def resolve_virtual_trades():
     """Checks open virtual trades and resolves them using Pyth pricing."""
@@ -503,6 +571,9 @@ async def resolve_virtual_trades():
                 )
                 logger.info(f"AI Agent: {summary}")
                 
+                # Trigger LLM Post-Mortem Analysis
+                await run_trade_post_mortem(trade_id, symbol, direction, ref_price, entry_price, status, open_price)
+                
         else: # Close bet
             is_commodity = any(c in symbol for c in ["WTI", "XAU", "XAG", "GOLD", "SILVER"])
             close_hour = 17 if is_commodity else 16
@@ -549,6 +620,9 @@ async def resolve_virtual_trades():
                     f"Kapanis fiyati: ${close_price:.2f}. Referans fiyati: ${ref_price:.2f}. Kazanan Yon: {win_dir}."
                 )
                 logger.info(f"AI Agent: {summary}")
+                
+                # Trigger LLM Post-Mortem Analysis
+                await run_trade_post_mortem(trade_id, symbol, direction, ref_price, entry_price, status, close_price)
                 
     if resolved_any:
         await database.record_portfolio_history()

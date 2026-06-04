@@ -100,6 +100,7 @@ async def init_db():
             # Add clob_token_id & trade_type for real trading tracking
             await conn.execute("ALTER TABLE virtual_trades ADD COLUMN IF NOT EXISTS clob_token_id TEXT")
             await conn.execute("ALTER TABLE virtual_trades ADD COLUMN IF NOT EXISTS trade_type TEXT DEFAULT 'virtual'")
+            await conn.execute("ALTER TABLE virtual_trades ADD COLUMN IF NOT EXISTS post_mortem TEXT")
 
             # 6. Global Settings table
             await conn.execute("""
@@ -657,3 +658,25 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
         return {"success": True, "filled_size": total_filled_usd, "price": avg_price}
     else:
         return {"success": False, "error": "No fills completed"}
+
+
+async def update_trade_post_mortem(trade_id: int, post_mortem: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE virtual_trades SET post_mortem = $1 WHERE id = $2", post_mortem, trade_id)
+
+
+async def get_recent_resolved_trades_with_feedback(symbol: str = None, limit: int = 5) -> list:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if symbol:
+            rows = await conn.fetch(
+                "SELECT * FROM virtual_trades WHERE status IN ('won', 'lost') AND symbol = $1 AND post_mortem IS NOT NULL ORDER BY resolved_at DESC LIMIT $2",
+                symbol.upper(), limit
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT * FROM virtual_trades WHERE status IN ('won', 'lost') AND post_mortem IS NOT NULL ORDER BY resolved_at DESC LIMIT $1",
+                limit
+            )
+        return [dict(row) for row in rows]
