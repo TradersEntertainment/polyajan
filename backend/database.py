@@ -675,17 +675,16 @@ async def place_polymarket_clob_order(token_id: str, price: float, size_usd: flo
 
         # Real order placement
         try:
-            from py_clob_client.clob_types import OrderArgs, Side, OrderType
+            from py_clob_client.clob_types import OrderArgs
             shares = fill_size_usd / ask_p
             
             resp_order = client.create_and_post_order(
                 order_args=OrderArgs(
                     token_id=token_id,
                     price=round(ask_p, 2),
-                    side=Side.BUY,
+                    side="BUY",
                     size=round(shares, 4)
-                ),
-                order_type=OrderType.GTC
+                )
             )
             
             if resp_order and isinstance(resp_order, dict) and resp_order.get("success"):
