@@ -965,40 +965,86 @@ async def run_autonomous_scan_cycle():
         now_tr = datetime.now(tr_tz)
         today_str = now_tr.strftime("%Y-%m-%d")
         
-        # Check at 23:50 - 23:59 Turkey Time
-        if now_tr.hour == 23 and now_tr.minute >= 50:
-            last_sent = await database.get_setting("last_telegram_daily_report_date")
+        # 1. Stocks Report (Hisseler) at 23:03 TRT
+        if now_tr.hour == 23 and 3 <= now_tr.minute < 8:
+            last_sent = await database.get_setting("last_telegram_stock_report_date")
             if last_sent != today_str:
                 port = await database.get_portfolio()
                 balance = port["balance"]
                 equity = port["equity"]
                 
+                # Fetch open stock trades
                 open_trades = await database.get_open_virtual_trades()
-                open_count = len(open_trades)
+                open_stocks = [t for t in open_trades if t["symbol"] not in ["WTI", "XAU", "XAG", "GOLD", "SILVER"]]
                 
+                # Fetch resolved stock trades in last 24 hours
+                time_threshold = (datetime.now() - timedelta(hours=24)).isoformat()
                 pool = await database.get_pool()
                 async with pool.acquire() as conn:
-                    resolved_today = await conn.fetch(
-                        "SELECT status, profit FROM virtual_trades WHERE status IN ('won', 'lost') AND resolved_at LIKE $1",
-                        f"{today_str}%"
+                    resolved = await conn.fetch(
+                        "SELECT symbol, status, profit FROM virtual_trades WHERE status IN ('won', 'lost') AND resolved_at >= $1",
+                        time_threshold
                     )
                 
-                total_wins = sum(1 for r in resolved_today if r["status"] == "won")
-                total_losses = sum(1 for r in resolved_today if r["status"] == "lost")
-                total_profit = sum(float(r["profit"]) for r in resolved_today)
+                resolved_stocks = [r for r in resolved if r["symbol"] not in ["WTI", "XAU", "XAG", "GOLD", "SILVER"]]
+                
+                total_wins = sum(1 for r in resolved_stocks if r["status"] == "won")
+                total_losses = sum(1 for r in resolved_stocks if r["status"] == "lost")
+                total_profit = sum(float(r["profit"]) for r in resolved_stocks)
                 
                 msg = (
-                    f"📊 <b>[GÜNLÜK HESAP ÖZETİ - {today_str}]</b>\n\n"
+                    f"📊 <b>[GÜNLÜK HİSSE RAPORU - {today_str}]</b>\n\n"
                     f"<b>Mod:</b> {trading_mode}\n"
                     f"<b>Net Varlık (Equity):</b> ${equity:.2f}\n"
                     f"<b>Boştaki Bakiye (Balance):</b> ${balance:.2f}\n\n"
-                    f"<b>Aktif Açık İşlemler:</b> {open_count} adet\n"
-                    f"<b>Bugün Kapatılan İşlemler:</b> {len(resolved_today)} adet "
+                    f"<b>Aktif Açık Hisseler:</b> {len(open_stocks)} adet\n"
+                    f"<b>Son 24s Sonuçlanan Hisseler:</b> {len(resolved_stocks)} adet "
                     f"(✅ {total_wins} / ❌ {total_losses})\n"
-                    f"<b>Bugünkü Kar/Zarar:</b> ${total_profit:+.2f}"
+                    f"<b>Hisseler Kar/Zarar:</b> ${total_profit:+.2f}"
                 )
                 await send_telegram_message(msg)
-                await database.update_setting("last_telegram_daily_report_date", today_str)
+                await database.update_setting("last_telegram_stock_report_date", today_str)
+
+        # 2. Commodities Report (Petrol / Altın / Gümüş) at 00:05 TRT
+        if now_tr.hour == 0 and 5 <= now_tr.minute < 10:
+            last_sent = await database.get_setting("last_telegram_commodity_report_date")
+            if last_sent != today_str:
+                port = await database.get_portfolio()
+                balance = port["balance"]
+                equity = port["equity"]
+                
+                # Fetch open commodity trades
+                open_trades = await database.get_open_virtual_trades()
+                open_commodities = [t for t in open_trades if t["symbol"] in ["WTI", "XAU", "XAG", "GOLD", "SILVER"]]
+                
+                # Fetch resolved commodity trades in last 24 hours
+                time_threshold = (datetime.now() - timedelta(hours=24)).isoformat()
+                pool = await database.get_pool()
+                async with pool.acquire() as conn:
+                    resolved = await conn.fetch(
+                        "SELECT symbol, status, profit FROM virtual_trades WHERE status IN ('won', 'lost') AND resolved_at >= $1",
+                        time_threshold
+                    )
+                
+                resolved_commodities = [r for r in resolved if r["symbol"] in ["WTI", "XAU", "XAG", "GOLD", "SILVER"]]
+                
+                total_wins = sum(1 for r in resolved_commodities if r["status"] == "won")
+                total_losses = sum(1 for r in resolved_commodities if r["status"] == "lost")
+                total_profit = sum(float(r["profit"]) for r in resolved_commodities)
+                
+                msg = (
+                    f"🛢️ <b>[GÜNLÜK EMTİA RAPORU - {today_str}]</b>\n\n"
+                    f"<b>Mod:</b> {trading_mode}\n"
+                    f"<b>Net Varlık (Equity):</b> ${equity:.2f}\n"
+                    f"<b>Boştaki Bakiye (Balance):</b> ${balance:.2f}\n\n"
+                    f"<b>Aktif Açık Emtialar:</b> {len(open_commodities)} adet\n"
+                    f"<b>Son 24s Sonuçlanan Emtialar:</b> {len(resolved_commodities)} adet "
+                    f"(✅ {total_wins} / ❌ {total_losses})\n"
+                    f"<b>Emtia Kar/Zarar:</b> ${total_profit:+.2f}"
+                )
+                await send_telegram_message(msg)
+                await database.update_setting("last_telegram_commodity_report_date", today_str)
+                
     except Exception as eod_err:
         logger.error(f"Error executing daily Telegram summary: {eod_err}")
 

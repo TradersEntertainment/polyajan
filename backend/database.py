@@ -752,3 +752,22 @@ async def get_recent_resolved_trades_with_feedback(symbol: str = None, limit: in
                 limit
             )
         return [dict(row) for row in rows]
+
+
+async def get_setting(key: str) -> str:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT value FROM global_settings WHERE key = $1", key)
+        return row["value"] if row else None
+
+
+async def update_setting(key: str, value: str):
+    from datetime import datetime
+    now_str = datetime.now().isoformat()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO global_settings (key, value, updated_at)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+        """, key, value, now_str)
