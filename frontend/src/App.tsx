@@ -54,12 +54,21 @@ interface AgentLog {
   created_at: string;
 }
 
-interface Portfolio {
+interface PortfolioDetails {
   balance: number;
   equity: number;
   open_positions_value: number;
+}
+
+interface Portfolio {
+  trading_mode: string;
   risk_profile: string; // 'CONSERVATIVE', 'MODERATE', 'AGGRESSIVE'
   risk_justification: string;
+  virtual: PortfolioDetails;
+  real: PortfolioDetails;
+  balance: number;
+  equity: number;
+  open_positions_value: number;
 }
 
 interface VirtualTrade {
@@ -76,6 +85,7 @@ interface VirtualTrade {
   created_at: string;
   resolved_at: string | null;
   current_price?: number;
+  trade_type?: string;
 }
 
 function App() {
@@ -91,6 +101,8 @@ function App() {
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
+  const [portfolioView, setPortfolioView] = useState<'virtual' | 'real'>('virtual');
+  const [isFirstLoad, setIsFirstLoad] = useState(true);
 
   // Fetch all data
   const fetchData = async () => {
@@ -108,7 +120,14 @@ function App() {
       if (signalsRes.ok) setSignals(await signalsRes.json());
       if (tuningsRes.ok) setTunings(await tuningsRes.json());
       if (logsRes.ok) setLogs(await logsRes.json());
-      if (portfolioRes.ok) setPortfolio(await portfolioRes.json());
+      if (portfolioRes.ok) {
+        const pData = await portfolioRes.json();
+        setPortfolio(pData);
+        if (isFirstLoad) {
+          setPortfolioView(pData.trading_mode === 'REAL' ? 'real' : 'virtual');
+          setIsFirstLoad(false);
+        }
+      }
       if (tradesRes.ok) setVirtualTrades(await tradesRes.json());
       if (historyRes.ok) setPortfolioHistory(await historyRes.json());
     } catch (error) {
@@ -229,7 +248,10 @@ function App() {
     l.log_type.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const resolvedTrades = virtualTrades.filter(t => t.status !== 'open');
+  const currentTrades = virtualTrades.filter(t => 
+    portfolioView === 'real' ? t.trade_type === 'real' : t.trade_type !== 'real'
+  );
+  const resolvedTrades = currentTrades.filter(t => t.status !== 'open');
   const winCount = resolvedTrades.filter(t => t.status === 'won').length;
   const winRate = resolvedTrades.length > 0 ? Math.round((winCount / resolvedTrades.length) * 100) : 0;
 
@@ -280,7 +302,7 @@ function App() {
       <div className="bg-neutral-900/40 border border-neutral-850 rounded-2xl p-5 backdrop-blur-sm">
         <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
           <TrendingUp size={16} className="text-purple-400" />
-          Bakiye ve Net Portföy Grafiği (Sanal)
+          Bakiye ve Net Portföy Grafiği ({portfolioView === 'real' ? 'Gerçek' : 'Sanal'})
         </h3>
         <div className="relative w-full h-48 bg-neutral-950/60 rounded-xl p-3 border border-neutral-850/80 flex flex-col justify-between">
           <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full">
@@ -330,7 +352,7 @@ function App() {
     );
   };
 
-  const filteredVirtualTrades = virtualTrades.filter(t => 
+  const filteredCurrentTrades = currentTrades.filter(t => 
     t.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
     t.direction.toLowerCase().includes(searchQuery.toLowerCase()) ||
     t.status.toLowerCase().includes(searchQuery.toLowerCase())
@@ -421,14 +443,14 @@ function App() {
           <div className="bg-neutral-900/40 border border-neutral-800/80 rounded-2xl p-5 relative overflow-hidden backdrop-blur-sm group hover:border-neutral-700/50 transition">
             <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-600/5 rounded-full blur-2xl group-hover:bg-indigo-600/10 transition duration-300"></div>
             <div className="flex items-center justify-between mb-3">
-              <span className="text-neutral-400 text-sm font-medium">Portföy Değeri (Net)</span>
+              <span className="text-neutral-400 text-sm font-medium">Net Varlık (Equity - {portfolioView === 'real' ? 'Gerçek' : 'Sanal'})</span>
               <div className="p-2 bg-indigo-500/10 text-indigo-400 rounded-lg"><Briefcase size={16} /></div>
             </div>
             <div className="text-3xl font-extrabold text-white tracking-tight">
-              ${portfolio ? portfolio.equity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '1,000.00'}
+              ${portfolio ? (portfolioView === 'real' ? portfolio.real.equity : portfolio.virtual.equity).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '1,000.00'}
             </div>
             <p className="text-xs text-indigo-400 mt-2 flex items-center gap-1 font-medium">
-              <span>●</span> Nakit: ${portfolio ? portfolio.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '1,000.00'}
+              <span>●</span> Nakit: ${portfolio ? (portfolioView === 'real' ? portfolio.real.balance : portfolio.virtual.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '1,000.00'}
             </p>
           </div>
 
@@ -449,12 +471,12 @@ function App() {
           <div className="bg-neutral-900/40 border border-neutral-800/80 rounded-2xl p-5 relative overflow-hidden backdrop-blur-sm group hover:border-neutral-700/50 transition">
             <div className="absolute top-0 right-0 w-24 h-24 bg-amber-600/5 rounded-full blur-2xl group-hover:bg-amber-600/10 transition duration-300"></div>
             <div className="flex items-center justify-between mb-3">
-              <span className="text-neutral-400 text-sm font-medium">Sanal Başarı Oranı</span>
+              <span className="text-neutral-400 text-sm font-medium">{portfolioView === 'real' ? 'Gerçek Başarı Oranı' : 'Sanal Başarı Oranı'}</span>
               <div className="p-2 bg-amber-500/10 text-amber-400 rounded-lg"><History size={16} /></div>
             </div>
             <div className="text-3xl font-extrabold text-white tracking-tight">%{winRate}</div>
             <p className="text-xs text-neutral-400 mt-2">
-              Toplam {virtualTrades.length} İşlem / {resolvedTrades.length} Sonuçlanan
+              Toplam {currentTrades.length} İşlem / {resolvedTrades.length} Sonuçlanan
             </p>
           </div>
         </section>
@@ -482,7 +504,7 @@ function App() {
               }`}
             >
               <Briefcase size={14} />
-              Sanal Portföy
+              Portföy Takibi
             </button>
             <button
               onClick={() => setActiveTab('tunings')}
@@ -713,6 +735,37 @@ function App() {
             {activeTab === 'portfolio' && (
               <div className="space-y-6">
                 
+                {/* View Selector */}
+                <div className="flex justify-between items-center bg-neutral-900/60 p-4 border border-neutral-800 rounded-2xl">
+                  <div className="text-left">
+                    <h4 className="text-sm font-bold text-white">Portföy Modu Seçimi</h4>
+                    <p className="text-xs text-neutral-400">Görüntülenen cüzdan verilerini ve işlem geçmişini seçin.</p>
+                  </div>
+                  <div className="flex p-1 bg-neutral-950 border border-neutral-850 rounded-xl">
+                    <button
+                      onClick={() => setPortfolioView('virtual')}
+                      className={`px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-wider transition ${
+                        portfolioView === 'virtual'
+                          ? 'bg-purple-600 text-white shadow-md'
+                          : 'text-neutral-400 hover:text-neutral-200'
+                      }`}
+                    >
+                      Sanal (Paper)
+                    </button>
+                    <button
+                      onClick={() => setPortfolioView('real')}
+                      className={`px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-wider transition flex items-center gap-1.5 ${
+                        portfolioView === 'real'
+                          ? 'bg-emerald-600 text-white shadow-md'
+                          : 'text-neutral-400 hover:text-neutral-200'
+                      }`}
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                      Gerçek (Real)
+                    </button>
+                  </div>
+                </div>
+
                 {/* Risk Profile & Justification card */}
                 <div className="bg-gradient-to-tr from-neutral-900/60 to-purple-950/10 border border-purple-500/20 rounded-2xl p-6 relative overflow-hidden backdrop-blur-sm shadow-md">
                   <div className="absolute top-0 right-0 w-36 h-36 bg-purple-500/5 rounded-full blur-3xl"></div>
@@ -750,15 +803,14 @@ function App() {
                 <div className="bg-neutral-900/40 border border-neutral-850 rounded-2xl p-5 backdrop-blur-sm">
                   <h3 className="text-base font-bold text-white mb-4 flex items-center gap-2">
                     <Zap size={16} className="text-indigo-400" />
-                    Açık Sanal Pozisyonlar ({filteredVirtualTrades.filter(t => t.status === 'open').length})
+                    Açık Pozisyonlar ({filteredCurrentTrades.filter(t => t.status === 'open').length})
                   </h3>
 
-                  {filteredVirtualTrades.filter(t => t.status === 'open').length === 0 ? (
+                  {filteredCurrentTrades.filter(t => t.status === 'open').length === 0 ? (
                     <p className="text-sm text-neutral-500 py-6 text-center">Aktif açık pozisyon bulunmamaktadır.</p>
                   ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {filteredVirtualTrades.filter(t => t.status === 'open').map((trade) => {
-                        // Find live price from backend's current_price or active signals
+                      {filteredCurrentTrades.filter(t => t.status === 'open').map((trade) => {
                         const sig = signals.find(s => s.symbol === trade.symbol && s.direction === trade.direction && s.status === 'active');
                         const livePrice = trade.current_price ?? sig?.polymarket_price ?? trade.entry_price;
                         const currentValue = trade.shares * livePrice;
@@ -815,7 +867,7 @@ function App() {
                   <div className="p-5 border-b border-neutral-800 flex justify-between items-center">
                     <h3 className="text-base font-bold text-white flex items-center gap-2">
                       <History size={16} className="text-amber-400" />
-                      Sonuçlanan Sanal İşlemler ({filteredVirtualTrades.filter(t => t.status !== 'open').length})
+                      Sonuçlanan İşlemler ({filteredCurrentTrades.filter(t => t.status !== 'open').length})
                     </h3>
                   </div>
 
@@ -833,14 +885,14 @@ function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-neutral-800/60 text-sm">
-                        {filteredVirtualTrades.filter(t => t.status !== 'open').length === 0 ? (
+                        {filteredCurrentTrades.filter(t => t.status !== 'open').length === 0 ? (
                           <tr>
                             <td colSpan={7} className="py-8 px-6 text-center text-neutral-500">
-                              Sonuçlanan sanal işlem geçmişi bulunmamaktadır.
+                              Sonuçlanan işlem geçmişi bulunmamaktadır.
                             </td>
                           </tr>
                         ) : (
-                          filteredVirtualTrades.filter(t => t.status !== 'open').map((trade, idx) => (
+                          filteredCurrentTrades.filter(t => t.status !== 'open').map((trade, idx) => (
                             <tr key={idx} className="hover:bg-neutral-900/25 transition">
                               <td className="py-3.5 px-6 font-bold text-white">{trade.symbol}</td>
                               <td className="py-3.5 px-6">

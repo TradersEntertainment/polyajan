@@ -242,14 +242,8 @@ async def get_agent_logs(limit: int = 50):
 async def get_portfolio() -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # Get balance
         trading_mode = os.getenv("TRADING_MODE", "VIRTUAL").upper()
-        if trading_mode == "REAL":
-            balance = await get_polymarket_usdc_balance()
-        else:
-            row = await conn.fetchrow("SELECT balance FROM virtual_portfolio WHERE id = 1")
-            balance = row["balance"] if row else 1000.0
-            
+        
         # Get settings
         risk_profile = 'MODERATE'
         risk_justification = 'Dengeli strateji.'
@@ -260,9 +254,20 @@ async def get_portfolio() -> dict:
             elif r["key"] == 'risk_justification':
                 risk_justification = r["value"]
                     
-        # Calculate open positions value
-        open_positions_value = 0.0
-        open_trades = await conn.fetch("SELECT symbol, direction, shares, entry_price, clob_token_id FROM virtual_trades WHERE status = 'open'")
+        # Get virtual balance
+        row = await conn.fetchrow("SELECT balance FROM virtual_portfolio WHERE id = 1")
+        virtual_balance = row["balance"] if row else 1000.0
+        
+        # Get real balance
+        try:
+            real_balance = await get_polymarket_usdc_balance()
+        except Exception:
+            real_balance = 0.0
+            
+        # Calculate open positions values
+        virtual_open_val = 0.0
+        real_open_val = 0.0
+        open_trades = await conn.fetch("SELECT symbol, direction, shares, entry_price, clob_token_id, trade_type FROM virtual_trades WHERE status = 'open'")
         
         import httpx
         import asyncio
@@ -297,15 +302,34 @@ async def get_portfolio() -> dict:
                         t["symbol"], t["direction"]
                     )
                     live_price = sig_row["polymarket_price"] if sig_row else t["entry_price"]
-                open_positions_value += t["shares"] * live_price
                 
-        equity = balance + open_positions_value
+                trade_value = t["shares"] * live_price
+                if t.get("trade_type") == "real":
+                    real_open_val += trade_value
+                else:
+                    virtual_open_val += trade_value
+                
+        virtual_equity = virtual_balance + virtual_open_val
+        real_equity = real_balance + real_open_val
+        
         return {
-            "balance": balance,
-            "equity": equity,
-            "open_positions_value": open_positions_value,
+            "trading_mode": trading_mode,
             "risk_profile": risk_profile,
-            "risk_justification": risk_justification
+            "risk_justification": risk_justification,
+            "virtual": {
+                "balance": virtual_balance,
+                "equity": virtual_equity,
+                "open_positions_value": virtual_open_val
+            },
+            "real": {
+                "balance": real_balance,
+                "equity": real_equity,
+                "open_positions_value": real_open_val
+            },
+            # Top-level compat for backend calls
+            "balance": real_balance if trading_mode == "REAL" else virtual_balance,
+            "equity": real_equity if trading_mode == "REAL" else virtual_equity,
+            "open_positions_value": real_open_val if trading_mode == "REAL" else virtual_open_val
         }
 
 
