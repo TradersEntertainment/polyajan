@@ -432,6 +432,99 @@ async def debug_balances():
     except Exception as e:
         return {"error": str(e)}
 
+async def call_groq_chat(messages: list) -> str:
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    if not groq_api_key:
+        return "Groq API anahtarı yapılandırılmamış."
+        
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {groq_api_key}",
+        "Content-Type": "application/json"
+    }
+    body = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": messages,
+        "temperature": 0.5,
+    }
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, headers=headers, json=body, timeout=25.0)
+            if resp.status_code == 200:
+                return resp.json()["choices"][0]["message"]["content"]
+            else:
+                return f"Groq API Hatası: {resp.status_code} - {resp.text}"
+    except Exception as e:
+        return f"Sohbet hatası oluştu: {str(e)}"
+
+@app.post("/api/chat")
+async def chat_with_agent(payload: dict):
+    user_message = payload.get("message", "")
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Mesaj boş olamaz.")
+        
+    try:
+        portfolio = await database.get_portfolio()
+        trades = await database.get_virtual_trades(limit=15)
+        signals = await database.get_active_signals()
+        logs = await database.get_agent_logs(limit=15)
+    except Exception as db_err:
+        raise HTTPException(status_code=500, detail=f"Veritabanı hatası: {str(db_err)}")
+        
+    trades_str = ""
+    for t in trades:
+        trades_str += f"- ID {t['id']}: {t['symbol']} {t['direction']} | Giriş: ${t['entry_price']:.2f} | Adet: {t['shares']:.2f} | Değer: ${t['size_usd']:.2f} | Durum: {t['status'].upper()} | Tip: {t['trade_type'].upper()}"
+        if t.get("profit") is not None and t['status'] != 'open':
+            trades_str += f" | Kâr/Zarar: ${t['profit']:+.2f}"
+        if t.get("post_mortem"):
+            trades_str += f" | Analiz: {t['post_mortem']}"
+        trades_str += "\n"
+        
+    signals_str = ""
+    for s in signals:
+        signals_str += f"- {s['symbol']} {s['direction']} | Fark: {s['diff_pct']:+.2f}% | Poly Fiyat: {s['polymarket_price']:.2f} | Quant İhtimal: {s['quant_probability']*100:.1f}% | Edge: {s['edge_pct']:+.2f} | Güven: {s['confidence_level']} {s['confidence_stars']}\n"
+        
+    logs_str = ""
+    for l in logs:
+        logs_str += f"- [{l['created_at']}] {l['log_type']}: {l['summary']} | Detay: {l['details']}\n"
+        
+    trading_mode = portfolio.get("trading_mode", "VIRTUAL")
+    v_bal = portfolio.get("virtual", {}).get("balance", 0.0)
+    v_eq = portfolio.get("virtual", {}).get("equity", 0.0)
+    r_bal = portfolio.get("real", {}).get("balance", 0.0)
+    r_eq = portfolio.get("real", {}).get("equity", 0.0)
+    risk_profile = portfolio.get("risk_profile", "MODERATE")
+    
+    system_prompt = (
+        "Sen 'Antigravity' tarafından geliştirilmiş, Polymarket üzerinde çalışan yapay zeka tabanlı bir kantitatif algoritmasın (AI Quant Agent).\n"
+        "Görevin, kullanıcının senin kararların, işlemlerin ve genel portföyün hakkında sorduğu sorulara yanıt vermek.\n\n"
+        "Şu anki sistem durumun ve portföyün aşağıdadır:\n"
+        f"- Aktif İşlem Modu: {trading_mode}\n"
+        f"- Risk Profili: {risk_profile}\n"
+        f"- Sanal Bakiye: ${v_bal:.2f} (Net Varlık/Equity: ${v_eq:.2f})\n"
+        f"- Gerçek Bakiye: ${r_bal:.2f} (Net Varlık/Equity: ${r_eq:.2f})\n\n"
+        "Açık ve Sonuçlanan Son İşlemlerin:\n"
+        f"{trades_str}\n"
+        "Aktif Taranan Sinyallerin:\n"
+        f"{signals_str}\n"
+        "Son Karar ve Sistem Günlüklerin:\n"
+        f"{logs_str}\n"
+        "Kurallar:\n"
+        "1. Sorulara her zaman samimi, profesyonel, anlaşılır bir Türkçe ile yanıt ver.\n"
+        "2. Verdiğin kararların (örneğin WTI veya XAU alımları) arkasındaki mantığı sorulursa, yukarıdaki sinyal ve günlük bilgilerine bakarak 'Edge' (avantaj) ve Quant olasılıklarını kullanarak açıkla.\n"
+        "3. Eğer kullanıcı ne yaptığını sorarsa, yukarıdaki günlüklere dayanarak son 24 saatte gerçekleştirdiğin eylemlerin (örneğin parametre optimizasyonu, tarama, bakiye eşitleme) özetini geç.\n"
+        "4. Yanıtlarını kısa ve öz tut, gereksiz laf kalabalığı yapma. Markdown formatında yanıt ver.\n"
+    )
+    
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message}
+    ]
+    
+    response = await call_groq_chat(messages)
+    return {"response": response}
+
 # --- Serve Frontend Static Files ---
 frontend_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/dist"))
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { 
   Brain, 
   TrendingUp, 
@@ -17,7 +17,11 @@ import {
   History,
   XCircle,
   Loader2,
-  LayoutGrid
+  LayoutGrid,
+  MessageSquare,
+  Send,
+  BookOpen,
+  User
 } from 'lucide-react';
 
 // API Configuration
@@ -91,8 +95,15 @@ interface VirtualTrade {
   trade_type?: string;
 }
 
+interface ChatMessage {
+  id: string;
+  sender: 'user' | 'agent';
+  text: string;
+  timestamp: Date;
+}
+
 function App() {
-  const [activeTab, setActiveTab] = useState<'terminal' | 'signals' | 'tunings' | 'logs' | 'portfolio'>('terminal');
+  const [activeTab, setActiveTab] = useState<'terminal' | 'signals' | 'tunings' | 'logs' | 'portfolio' | 'chat'>('terminal');
   const [signals, setSignals] = useState<Signal[]>([]);
   const [tunings, setTunings] = useState<Tuning[]>([]);
   const [logs, setLogs] = useState<AgentLog[]>([]);
@@ -108,6 +119,19 @@ function App() {
   const [isFirstLoad, setIsFirstLoad] = useState(true);
   const [closingTradeId, setClosingTradeId] = useState<number | null>(null);
   const [closeResult, setCloseResult] = useState<string | null>(null);
+
+  // Chat integration states
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    {
+      id: 'welcome',
+      sender: 'agent',
+      text: 'Merhaba! Ben Poly AI Quant Algoritman. Polymarket üzerindeki aktif pozisyonları, fırsat sinyallerini ve optimizasyon kararlarını takip ediyorum. Bana ne yaptığım veya kararlarım hakkında sorular sorabilirsin!',
+      timestamp: new Date()
+    }
+  ]);
+  const [currentMessage, setCurrentMessage] = useState('');
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Fetch all data
   const fetchData = async () => {
@@ -148,6 +172,70 @@ function App() {
     const interval = setInterval(fetchData, 60000);
     return () => clearInterval(interval);
   }, []);
+
+  // Auto-scroll to bottom of chat when new message arrives or chat tab is active
+  useEffect(() => {
+    if (activeTab === 'chat') {
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
+    }
+  }, [chatMessages, activeTab]);
+
+  const sendChatMessage = async (msgText: string) => {
+    if (!msgText.trim() || isSendingMessage) return;
+    
+    const userMsgId = `user-${Date.now()}`;
+    const userMsg: ChatMessage = {
+      id: userMsgId,
+      sender: 'user',
+      text: msgText,
+      timestamp: new Date()
+    };
+    
+    setChatMessages(prev => [...prev, userMsg]);
+    setCurrentMessage('');
+    setIsSendingMessage(true);
+    
+    try {
+      const res = await fetch(`${API_BASE}/api/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ message: msgText })
+      });
+      
+      const data = await res.json();
+      if (res.ok) {
+        const agentMsg: ChatMessage = {
+          id: `agent-${Date.now()}`,
+          sender: 'agent',
+          text: data.response || 'Bir hata oluştu veya boş bir yanıt döndü.',
+          timestamp: new Date()
+        };
+        setChatMessages(prev => [...prev, agentMsg]);
+      } else {
+        const errorMsg: ChatMessage = {
+          id: `agent-err-${Date.now()}`,
+          sender: 'agent',
+          text: `Hata: ${data.detail || 'Sohbet sunucusundan hata döndü.'}`,
+          timestamp: new Date()
+        };
+        setChatMessages(prev => [...prev, errorMsg]);
+      }
+    } catch (error) {
+      const errorMsg: ChatMessage = {
+        id: `agent-err-${Date.now()}`,
+        sender: 'agent',
+        text: 'Sunucuya bağlanılamadı. Lütfen backend servisinizin çalıştığından emin olun.',
+        timestamp: new Date()
+      };
+      setChatMessages(prev => [...prev, errorMsg]);
+    } finally {
+      setIsSendingMessage(false);
+    }
+  };
 
   const triggerScan = async () => {
     setIsScanning(true);
@@ -404,6 +492,85 @@ function App() {
     t.status.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const formatMarkdown = (text: string) => {
+    let html = text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/^\s*[-*]\s+(.+)$/gm, '<li class="ml-4 list-disc text-neutral-300 my-1">$1</li>');
+    html = html.replace(/```([^`]+)```/g, '<pre class="bg-neutral-950/80 p-3 rounded-lg border border-neutral-800 font-mono text-xs my-2 overflow-x-auto text-purple-300">$1</pre>');
+    html = html.replace(/`([^`]+)`/g, '<code class="bg-neutral-850 px-1.5 py-0.5 rounded text-purple-400 font-mono text-xs font-semibold">$1</code>');
+    html = html.replace(/\n/g, '<br/>');
+    return html;
+  };
+
+  const generateDiaryEntries = () => {
+    const entries: { id: string; type: string; title: string; content: string; date: Date; rawDate: string }[] = [];
+    
+    virtualTrades.forEach(t => {
+      const date = new Date(t.created_at);
+      const resolvedDate = t.resolved_at ? new Date(t.resolved_at) : null;
+      const formattedCreated = formatDate(t.created_at);
+      const formattedResolved = t.resolved_at ? formatDate(t.resolved_at) : '';
+      
+      if (t.status === 'open') {
+        entries.push({
+          id: `trade-open-${t.id}`,
+          type: 'trade-open',
+          title: `Pozisyon Açıldı: ${t.symbol} ${t.direction}`,
+          content: `Saat ${formattedCreated} itibarıyla ${t.symbol} kontratında ${t.direction} yönünde $${t.size_usd.toFixed(2)} büyüklüğünde pozisyon açtım. Giriş Fiyatı: $${t.entry_price.toFixed(2)}. (${t.trade_type === 'real' ? 'Gerçek Polymarket cüzdanı' : 'Sanal portföy'})`,
+          date: date,
+          rawDate: t.created_at
+        });
+      } else if (t.status === 'won') {
+        entries.push({
+          id: `trade-won-${t.id}`,
+          type: 'trade-won',
+          title: `Pozisyon Kazançla Kapandı: ${t.symbol} ${t.direction}`,
+          content: `Saat ${formattedResolved} itibarıyla ${t.symbol} ${t.direction} pozisyonunu kârla kapattım. Elde edilen kâr: +$${t.profit.toFixed(2)}. Giriş: $${t.entry_price.toFixed(2)}, Çıkış/Kapanış fiyatı lehimize sonuçlandı.`,
+          date: resolvedDate || date,
+          rawDate: t.resolved_at || t.created_at
+        });
+      } else if (t.status === 'lost') {
+        entries.push({
+          id: `trade-lost-${t.id}`,
+          type: 'trade-lost',
+          title: `Pozisyon Zararla Kapandı: ${t.symbol} ${t.direction}`,
+          content: `Saat ${formattedResolved} itibarıyla ${t.symbol} ${t.direction} pozisyonunu maalesef zararla kapatmak zorunda kaldım. Zarar: -$${Math.abs(t.profit).toFixed(2)}. Giriş: $${t.entry_price.toFixed(2)}. Risk yönetimi limitlerim dahilinde pozisyon sonlandırıldı.`,
+          date: resolvedDate || date,
+          rawDate: t.resolved_at || t.created_at
+        });
+      }
+    });
+    
+    logs.forEach(l => {
+      const date = new Date(l.created_at);
+      const cleanDetails = l.details ? l.details.replace(/<\/?[^>]+(>|$)/g, "") : "";
+      let type = 'log-info';
+      let titleEmoji = 'ℹ️';
+      if (l.log_type === 'Tuning') {
+        type = 'log-tuning';
+        titleEmoji = '⚙️';
+      } else if (l.log_type === 'Decision') {
+        type = 'log-decision';
+        titleEmoji = '🧠';
+      }
+      
+      entries.push({
+        id: `log-${l.id}`,
+        type: type,
+        title: `${titleEmoji} ${l.log_type}: ${l.summary}`,
+        content: cleanDetails,
+        date: date,
+        rawDate: l.created_at
+      });
+    });
+    
+    return entries.sort((a, b) => b.date.getTime() - a.date.getTime());
+  };
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col font-sans selection:bg-purple-500/30 selection:text-purple-200">
       {/* Top Premium Navbar */}
@@ -540,6 +707,17 @@ function App() {
             >
               <LayoutGrid size={14} />
               Terminal (Genel Bakış)
+            </button>
+            <button
+              onClick={() => setActiveTab('chat')}
+              className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-sm font-medium transition duration-200 flex items-center justify-center gap-2 whitespace-nowrap ${
+                activeTab === 'chat'
+                  ? 'bg-neutral-800 text-white shadow-md'
+                  : 'text-neutral-400 hover:text-neutral-200'
+              }`}
+            >
+              <MessageSquare size={14} />
+              Ajanla Sohbet (AI Chat)
             </button>
             <button
               onClick={() => setActiveTab('signals')}
@@ -1360,6 +1538,181 @@ function App() {
                       );
                     })
                   )}
+                </div>
+              </div>
+            )}
+
+            {/* Tab: Chat & Diary */}
+            {activeTab === 'chat' && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch animate-fade-in text-left">
+                {/* Left Column - Chat Interface (8 Cols) */}
+                <div className="lg:col-span-8 flex flex-col bg-neutral-900/40 border border-neutral-800 rounded-2xl p-5 backdrop-blur-sm h-[650px] relative">
+                  <div className="flex items-center justify-between mb-4 border-b border-neutral-800/80 pb-3">
+                    <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Brain size={18} className="text-purple-400 animate-pulse" />
+                      Ajan Yapay Zekası ile Sohbet
+                    </h4>
+                    <span className="bg-purple-500/10 text-purple-400 border border-purple-500/35 px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase">
+                      Groq Llama 3.3 Active
+                    </span>
+                  </div>
+
+                  {/* Messages Area */}
+                  <div className="flex-1 overflow-y-auto pr-1 mb-4 space-y-4 scrollbar-thin scroll-smooth">
+                    {chatMessages.map((msg) => {
+                      const isAgent = msg.sender === 'agent';
+                      return (
+                        <div
+                          key={msg.id}
+                          className={`flex items-start gap-3 max-w-[85%] ${
+                            isAgent ? 'mr-auto text-left' : 'ml-auto flex-row-reverse text-right'
+                          }`}
+                        >
+                          <div className={`p-2 rounded-xl border flex items-center justify-center shrink-0 ${
+                            isAgent 
+                              ? 'bg-purple-500/10 text-purple-400 border-purple-500/30' 
+                              : 'bg-neutral-800 text-neutral-300 border-neutral-700'
+                          }`}>
+                            {isAgent ? <Brain size={16} /> : <User size={16} />}
+                          </div>
+                          
+                          <div className="flex flex-col gap-1">
+                            <div className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed border ${
+                              isAgent 
+                                ? 'bg-neutral-950/60 text-neutral-200 border-neutral-850 rounded-tl-none' 
+                                : 'bg-purple-600/90 text-white border-purple-500/30 rounded-tr-none shadow-[0_0_15px_rgba(139,92,246,0.1)]'
+                            }`}>
+                              {isAgent ? (
+                                <div 
+                                  className="whitespace-pre-wrap font-sans"
+                                  dangerouslySetInnerHTML={{ __html: formatMarkdown(msg.text) }} 
+                                />
+                              ) : (
+                                <span className="whitespace-pre-wrap">{msg.text}</span>
+                              )}
+                            </div>
+                            <span className="text-[9px] text-neutral-550 font-mono mt-0.5 px-1">
+                              {msg.timestamp.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    
+                    {/* Sending / Typing Indicator */}
+                    {isSendingMessage && (
+                      <div className="flex items-start gap-3 mr-auto text-left max-w-[85%]">
+                        <div className="p-2 rounded-xl border bg-purple-500/10 text-purple-400 border-purple-500/30 shrink-0">
+                          <Brain size={16} className="animate-spin" />
+                        </div>
+                        <div className="px-4 py-3 bg-neutral-950/60 border border-neutral-850 text-neutral-450 rounded-2xl rounded-tl-none flex items-center gap-1.5 text-xs font-medium">
+                          <span>Ajan düşünüyor</span>
+                          <span className="flex gap-0.5 items-center justify-center mt-1">
+                            <span className="w-1 h-1 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                            <span className="w-1 h-1 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                            <span className="w-1 h-1 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    
+                    <div ref={messagesEndRef} />
+                  </div>
+
+                  {/* Suggestion Chips */}
+                  <div className="flex flex-wrap gap-2 mb-3 mt-1 border-t border-neutral-800/40 pt-3">
+                    {[
+                      { label: "Şu an ne yapıyorsun?", q: "Şu an ne yapıyorsun? Hangi piyasaları izliyorsun?" },
+                      { label: "Son işlemlerini anlat", q: "Son 15 işlemde ne yaptın? Detaylarını açıklar mısın?" },
+                      { label: "Neden Altın (XAU) aldın?", q: "Portföyündeki XAU alımının sebebi nedir? Hangi kantitatif edge'i buldun?" },
+                      { label: "Piyasa taraması yap", q: "Şu anki piyasa durumunu tara, arbitrage ve edge oranlarını bana anlat." }
+                    ].map((chip, index) => (
+                      <button
+                        key={index}
+                        onClick={() => sendChatMessage(chip.q)}
+                        disabled={isSendingMessage}
+                        className="px-3 py-1.5 bg-neutral-950/60 border border-neutral-850 hover:border-purple-500/40 text-[11px] text-neutral-450 hover:text-purple-300 rounded-lg transition duration-200 disabled:opacity-50"
+                      >
+                        {chip.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Message Input Box */}
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      sendChatMessage(currentMessage);
+                    }}
+                    className="flex gap-3 mt-auto"
+                  >
+                    <input
+                      type="text"
+                      placeholder="Ajana bir soru sor (ör. 'Neden altın aldın?', 'WTI işlem riskin nedir?')..."
+                      value={currentMessage}
+                      onChange={(e) => setCurrentMessage(e.target.value)}
+                      disabled={isSendingMessage}
+                      className="flex-1 bg-neutral-950 border border-neutral-850 focus:border-neutral-700 rounded-xl py-3 px-4 text-sm text-neutral-200 placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20 transition disabled:opacity-70"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!currentMessage.trim() || isSendingMessage}
+                      className="px-4 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl font-semibold shadow-lg hover:shadow-purple-500/10 border border-purple-500/20 transition duration-200 flex items-center justify-center gap-1.5 disabled:opacity-50"
+                    >
+                      <Send size={15} />
+                    </button>
+                  </form>
+                </div>
+
+                {/* Right Column - Narrative Diary (4 Cols) */}
+                <div className="lg:col-span-4 flex flex-col bg-neutral-900/40 border border-neutral-800 rounded-2xl p-5 backdrop-blur-sm h-[650px]">
+                  <div className="flex items-center justify-between mb-4 border-b border-neutral-800/80 pb-3">
+                    <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                      <BookOpen size={16} className="text-indigo-400" />
+                      Ajanın Günlüğü (Otonom)
+                    </h4>
+                    <span className="text-[10px] text-neutral-500 font-mono">
+                      Canlı Yayın
+                    </span>
+                  </div>
+
+                  {/* Diary Cards Area */}
+                  <div className="flex-1 overflow-y-auto pr-1 space-y-3 scrollbar-thin">
+                    {generateDiaryEntries().length === 0 ? (
+                      <div className="text-center py-10 bg-neutral-950/20 border border-neutral-850 rounded-xl">
+                        <p className="text-xs text-neutral-500">Günlük kaydı oluşturulabilecek veri bulunmuyor.</p>
+                      </div>
+                    ) : (
+                      generateDiaryEntries().map((entry) => {
+                        let badgeStyle = "bg-neutral-800 text-neutral-450 border-neutral-750";
+                        if (entry.type === 'trade-open') badgeStyle = "bg-purple-500/10 text-purple-400 border-purple-500/20";
+                        else if (entry.type === 'trade-won') badgeStyle = "bg-emerald-500/10 text-emerald-400 border-emerald-500/20";
+                        else if (entry.type === 'trade-lost') badgeStyle = "bg-rose-500/10 text-rose-400 border-rose-500/20";
+                        else if (entry.type === 'log-tuning') badgeStyle = "bg-blue-500/10 text-blue-400 border-blue-500/20";
+                        else if (entry.type === 'log-decision') badgeStyle = "bg-amber-500/10 text-amber-400 border-amber-500/20";
+
+                        return (
+                          <div 
+                            key={entry.id} 
+                            className="bg-neutral-950/40 border border-neutral-850 rounded-xl p-3.5 hover:border-neutral-800 transition flex flex-col gap-2"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide border ${badgeStyle}`}>
+                                {entry.type.replace('trade-', 'Pozisyon ').replace('log-', 'Ajan ').replace('-open', ' Açılış').replace('-won', ' Kazanç').replace('-lost', ' Kayıp').replace('-tuning', ' Optimizasyon').replace('-decision', ' Karar').replace('-info', ' Bilgi')}
+                              </span>
+                              <span className="text-[9px] text-neutral-550 font-mono">
+                                {formatDate(entry.rawDate)}
+                              </span>
+                            </div>
+                            <div>
+                              <h5 className="font-bold text-white text-xs mb-1 leading-snug">{entry.title}</h5>
+                              <p className="text-neutral-350 text-[11px] leading-relaxed whitespace-pre-wrap">{entry.content}</p>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
                 </div>
               </div>
             )}
