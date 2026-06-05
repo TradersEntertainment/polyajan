@@ -253,11 +253,11 @@ async def auto_detect_clob_positions():
                                 ref_price = extra_data["ref_price"]
                                 try:
                                     import pyth_client
-                                    pyth_id, _ = pyth_client.get_pyth_id(extra_data["symbol"])
+                                    pyth_id, full_symbol = pyth_client.get_pyth_id(extra_data["symbol"])
                                     if pyth_id:
                                         from_ts, to_ts = pyth_client.get_previous_close_times(extra_data["symbol"])
                                         ref_price_fetched = await pyth_client.get_historical_candle_price(
-                                            pyth_client.SYMBOL_MAP.get(extra_data["symbol"]) or extra_data["symbol"], pyth_id, from_ts, to_ts, price_type='close'
+                                            full_symbol or extra_data["symbol"], pyth_id, from_ts, to_ts, price_type='close'
                                         )
                                         if ref_price_fetched:
                                             ref_price = ref_price_fetched
@@ -1069,7 +1069,7 @@ async def run_autonomous_scan_cycle():
         lookback = tuning["lookback_days"]
         min_yield = tuning["min_expected_yield"]
  
-        pyth_id, _ = pyth_client.get_pyth_id(symbol)
+        pyth_id, full_symbol = pyth_client.get_pyth_id(symbol)
         if not pyth_id:
             continue
  
@@ -1080,7 +1080,7 @@ async def run_autonomous_scan_cycle():
         # Get yesterday's close reference
         from_ts, to_ts = pyth_client.get_previous_close_times(symbol)
         ref_price = await pyth_client.get_historical_candle_price(
-            pyth_client.SYMBOL_MAP.get(symbol) or symbol, pyth_id, from_ts, to_ts, price_type='close'
+            full_symbol, pyth_id, from_ts, to_ts, price_type='close'
         )
         if not ref_price:
             continue
