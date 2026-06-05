@@ -432,7 +432,7 @@ async def debug_balances():
     except Exception as e:
         return {"error": str(e)}
 
-async def call_groq_chat(messages: list) -> str:
+async def call_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile") -> str:
     groq_api_key = os.getenv("GROQ_API_KEY")
     if not groq_api_key:
         return "Groq API anahtarı yapılandırılmamış."
@@ -443,9 +443,9 @@ async def call_groq_chat(messages: list) -> str:
         "Content-Type": "application/json"
     }
     body = {
-        "model": "llama-3.3-70b-versatile",
+        "model": model,
         "messages": messages,
-        "temperature": 0.5,
+        "temperature": 0.5 if model == "llama-3.3-70b-versatile" else 0.1,
     }
     try:
         import httpx
@@ -456,6 +456,7 @@ async def call_groq_chat(messages: list) -> str:
             elif resp.status_code == 429 or "rate_limit" in resp.text:
                 # Rate limit fallback to Llama 3.1 8B instant
                 body["model"] = "llama-3.1-8b-instant"
+                body["temperature"] = 0.1
                 resp_fb = await client.post(url, headers=headers, json=body, timeout=20.0)
                 if resp_fb.status_code == 200:
                     return resp_fb.json()["choices"][0]["message"]["content"]
@@ -464,7 +465,7 @@ async def call_groq_chat(messages: list) -> str:
             else:
                 return f"Groq API Hatası: {resp.status_code} - {resp.text}"
     except Exception as e:
-        return f"Sohbet hatası oluştu: {str(e)}"
+        return f"İletişim Hatası: {str(e)}"
 
 @app.post("/api/chat")
 async def chat_with_agent(payload: dict):
@@ -472,6 +473,55 @@ async def chat_with_agent(payload: dict):
     if not user_message:
         raise HTTPException(status_code=400, detail="Mesaj boş olamaz.")
         
+    # 1. Parse intent
+    intent_messages = [
+        {"role": "system", "content": (
+            "You are a command router for a Polymarket Quant Trading Agent.\n"
+            "Analyze the user's message and determine if they want to perform an administrative action.\n\n"
+            "Supported actions:\n"
+            "- 'change_risk': The user wants to change/update the risk profile or risk mode. "
+            "Extract the target profile, which MUST be one of: 'CONSERVATIVE', 'MODERATE', 'AGGRESSIVE'.\n"
+            "- 'run_scan': The user wants to trigger a market scan, scanner cycle, or scan the assets.\n"
+            "- 'chat': None of the above; this is a standard question or discussion.\n\n"
+            "Respond ONLY with a raw JSON object containing these keys:\n"
+            "- 'action': The action name ('change_risk', 'run_scan', or 'chat').\n"
+            "- 'profile': The extracted risk profile ('CONSERVATIVE', 'MODERATE', 'AGGRESSIVE', or null).\n"
+            "- 'justification': A brief justification in Turkish for the change (or null).\n\n"
+            "Strictly return ONLY the JSON block. Do not include markdown backticks or explanation."
+        )},
+        {"role": "user", "content": user_message}
+    ]
+    
+    action = "chat"
+    target_profile = None
+    justification = None
+    
+    try:
+        intent_response = await call_groq_chat(intent_messages, model="llama-3.1-8b-instant")
+        intent_response = intent_response.strip().replace("```json", "").replace("```", "").strip()
+        import json
+        intent = json.loads(intent_response)
+        action = intent.get("action", "chat")
+        target_profile = intent.get("profile")
+        justification = intent.get("justification")
+    except Exception as e:
+        print(f"Failed to parse user intent: {e}")
+        
+    # 2. Execute actions if needed
+    action_status_msg = ""
+    if action == "change_risk" and target_profile in ("CONSERVATIVE", "MODERATE", "AGGRESSIVE"):
+        if not justification:
+            justification = f"Kullanıcı tarafından sohbet arayüzünden manuel olarak tetiklendi."
+        await database.update_risk_profile(target_profile, justification)
+        await database.add_agent_log("Tuning", f"Risk profili güncellendi: {target_profile}", justification)
+        action_status_msg = f"\n[SİSTEM NOTU: Kullanıcının talebi üzerine risk profili başarıyla '{target_profile}' olarak güncellendi ve veritabanına kaydedildi.]"
+        
+    elif action == "run_scan":
+        await agent_coordinator.run_autonomous_scan_cycle()
+        await database.add_agent_log("Decision", "Sohbet üzerinden manuel tarama tetiklendi", "Kullanıcı isteği üzerine anlık piyasa taraması başlatıldı.")
+        action_status_msg = "\n[SİSTEM NOTU: Piyasa taraması başarıyla tamamlandı. Aşağıdaki veriler en güncel tarama sonuçlarını içerir.]"
+        
+    # 3. Fetch database info for response
     try:
         portfolio = await database.get_portfolio()
         trades = await database.get_virtual_trades(limit=8)
@@ -548,10 +598,11 @@ async def chat_with_agent(payload: dict):
         f"{signals_str}\n"
         "Son Karar ve Sistem Günlüklerin:\n"
         f"{logs_str}\n"
+        f"{action_status_msg}\n\n"
         "Kurallar:\n"
         "1. Sorulara her zaman samimi, profesyonel, anlaşılır bir Türkçe ile yanıt ver.\n"
         "2. Verdiğin kararların (örneğin WTI veya XAU alımları) arkasındaki mantığı sorulursa, yukarıdaki sinyal ve günlük bilgilerine bakarak 'Edge' (avantaj) ve Quant olasılıklarını kullanarak açıkla.\n"
-        "3. Eğer kullanıcı ne yaptığını sorarsa, yukarıdaki günlüklere dayanarak son 24 saatte gerçekleştirdiğin eylemlerin (örneğin parametre optimizasyonu, tarama, bakiye eşitleme) özetini geç.\n"
+        "3. Eğer kullanıcı ne yaptığını sorursa, yukarıdaki günlüklere dayanarak son 24 saatte gerçekleştirdiğin eylemlerin (örneğin parametre optimizasyonu, tarama, bakiye eşitleme) özetini geç.\n"
         "4. Yanıtlarını kısa ve öz tut, gereksiz laf kalabalığı yapma. Markdown formatında yanıt ver.\n"
         "5. BAHİS DEĞERLENDİRME KURALLARI:\n"
         "   - Kullanıcı 'hit' (temas) veya 'close' (kapanış) bahisleri hakkında soru sorarsa, yukarıdaki 'Canlı Piyasa Fiyatları' listesindeki fiyatı ve hedefi karşılaştırarak analiz yap.\n"
