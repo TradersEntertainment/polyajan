@@ -453,6 +453,14 @@ async def call_groq_chat(messages: list) -> str:
             resp = await client.post(url, headers=headers, json=body, timeout=25.0)
             if resp.status_code == 200:
                 return resp.json()["choices"][0]["message"]["content"]
+            elif resp.status_code == 429 or "rate_limit" in resp.text:
+                # Rate limit fallback to Llama 3.1 8B instant
+                body["model"] = "llama-3.1-8b-instant"
+                resp_fb = await client.post(url, headers=headers, json=body, timeout=20.0)
+                if resp_fb.status_code == 200:
+                    return resp_fb.json()["choices"][0]["message"]["content"]
+                else:
+                    return f"Groq API Hatası (Yedek): {resp_fb.status_code} - {resp_fb.text}"
             else:
                 return f"Groq API Hatası: {resp.status_code} - {resp.text}"
     except Exception as e:
@@ -466,9 +474,9 @@ async def chat_with_agent(payload: dict):
         
     try:
         portfolio = await database.get_portfolio()
-        trades = await database.get_virtual_trades(limit=15)
+        trades = await database.get_virtual_trades(limit=8)
         signals = await database.get_active_signals()
-        logs = await database.get_agent_logs(limit=15)
+        logs = await database.get_agent_logs(limit=8)
     except Exception as db_err:
         raise HTTPException(status_code=500, detail=f"Veritabanı hatası: {str(db_err)}")
         
