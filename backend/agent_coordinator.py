@@ -1011,7 +1011,15 @@ async def run_autonomous_scan_cycle():
             is_significant_edge = edge >= required_edge_threshold
             is_high_prob_yield = (quant_prob >= 0.88) and (expected_yield >= min_yield)
             
-            if is_significant_edge or is_high_prob_yield:
+            # Rule 3: Late night 95-99c override (after 22:00 TRT)
+            is_late_night_override = False
+            tr_tz = pytz.timezone("Europe/Istanbul")
+            now_tr = datetime.now(tr_tz)
+            if now_tr.hour >= 22 and 0.95 <= poly_prob <= 0.99 and quant_prob >= 0.90:
+                is_late_night_override = True
+                logger.info(f"AI Agent: Late night 95-99c override triggered for {symbol} {direction} at price {poly_prob:.2f} (quant_prob: {quant_prob:.2f})")
+            
+            if is_significant_edge or is_high_prob_yield or is_late_night_override:
                 # Determine confidence rating
                 if quant_prob >= 0.97:
                     stars, level = "⭐⭐⭐⭐⭐", "ÇOK GÜVENLİ"
@@ -1044,9 +1052,16 @@ async def run_autonomous_scan_cycle():
                 token_id = m["up_token_id"] if direction == "UP" else m["down_token_id"]
                 trade_dir = f"OPEN_{direction}" if bet_type == "open" else direction
                 
-                # Turkey time check: if before 21:00 TRT and the trade is not very guaranteed (quant_prob < 0.90), skip execution
+                # Turkey time check: 
                 tr_tz = pytz.timezone("Europe/Istanbul")
                 now_tr = datetime.now(tr_tz)
+                
+                # Rule 1: No trades before 14:00 TRT
+                if now_tr.hour < 14:
+                    logger.info(f"AI Agent: Skipping trade candidate {symbol} {trade_dir} before 14:00 TRT.")
+                    continue
+                    
+                # Rule 1b: Before 21:00 TRT and the trade is not very guaranteed (quant_prob < 0.90), skip execution
                 if now_tr.hour < 21 and quant_prob < 0.90:
                     logger.info(f"AI Agent: Skipping trade candidate {symbol} {trade_dir} before 21:00 TRT (quant_prob {quant_prob:.2f} < 0.90)")
                     continue
@@ -1098,6 +1113,10 @@ async def run_autonomous_scan_cycle():
                         share = remaining_budget / (len(new_candidates) - idx)
                         size_to_trade = max(2.0, share)
                         
+                    # Rule 2: Limit single trade size to 15-20% (use 20% max cap) of total equity
+                    max_cap = equity * 0.20
+                    size_to_trade = min(size_to_trade, max_cap)
+                        
                     # If lottery, cap at max 3% of total equity
                     if is_lottery:
                         max_lottery_size = equity * 0.03
@@ -1144,8 +1163,13 @@ async def run_autonomous_scan_cycle():
             for cand in new_candidates:
                 port = await database.get_portfolio()
                 balance = port["balance"]
+                equity = port["equity"]
                 
                 size_to_trade = trade_size_usd
+                # Rule 2: Limit single trade size to 15-20% (use 20% max cap) of total equity
+                max_cap = equity * 0.20
+                size_to_trade = min(size_to_trade, max_cap)
+                
                 if balance < size_to_trade:
                     if balance >= 2.0:
                         size_to_trade = balance
