@@ -185,7 +185,7 @@ function App() {
     setClosingTradeId(tradeId);
     setCloseResult(null);
     try {
-      const res = await fetch(`${API_BASE}/api/trades/${tradeId}/close`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/trades/${tradeId}/close?password=${encodeURIComponent(password)}`, { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
         setCloseResult(data.message || 'Pozisyon başarıyla kapatıldı!');
@@ -216,7 +216,7 @@ function App() {
     }
     setIsLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/reset-portfolio`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/reset-portfolio?password=${encodeURIComponent(password)}`, { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
         setScanMessage(data.message || 'Portföy başarıyla sıfırlandı!');

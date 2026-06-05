@@ -278,7 +278,9 @@ async def get_virtual_trades():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/trades/{trade_id}/close")
-async def close_trade(trade_id: int):
+async def close_trade(trade_id: int, password: str = None):
+    if password != "allah":
+        raise HTTPException(status_code=401, detail="Yetkisiz erişim: Şifre hatalı veya eksik.")
     try:
         result = await database.close_trade_position(trade_id)
         if not result.get("success"):
@@ -324,7 +326,9 @@ async def get_portfolio_history():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/reset-portfolio")
-async def reset_portfolio():
+async def reset_portfolio(password: str = None):
+    if password != "allah":
+        raise HTTPException(status_code=401, detail="Yetkisiz erişim: Şifre hatalı veya eksik.")
     try:
         pool = await database.get_pool()
         from datetime import datetime
