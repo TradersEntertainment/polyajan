@@ -1065,6 +1065,11 @@ async def run_autonomous_scan_cycle():
                 if now_tr.hour < 21 and quant_prob < 0.90:
                     logger.info(f"AI Agent: Skipping trade candidate {symbol} {trade_dir} before 21:00 TRT (quant_prob {quant_prob:.2f} < 0.90)")
                     continue
+                    
+                # Rule 1c: If total capital is below $1,000, enforce 100% win-rate (0% reversal rate) i.e. quant_prob must be >= 1.0
+                if total_capital < 1000.0 and quant_prob < 1.0:
+                    logger.info(f"AI Agent: Skipping trade candidate {symbol} {trade_dir} because account equity is ${total_capital:.2f} (< $1000) and quant_prob {quant_prob:.4f} < 1.0 (requires 100% win-rate/0% reversal)")
+                    continue
                 
                 trade_candidates.append({
                     "symbol": symbol,
