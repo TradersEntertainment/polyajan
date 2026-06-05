@@ -467,6 +467,100 @@ async def call_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile")
     except Exception as e:
         return f"İletişim Hatası: {str(e)}"
 
+async def get_user_query_stats(user_message: str):
+    try:
+        msg = user_message.upper().replace(",", ".")
+        symbol = None
+        watchlist = ["SPY", "PLTR", "TSLA", "NVDA", "AAPL", "AMZN", "META", "GOOGL", "MSFT", "NFLX", "COIN", "HOOD", "ABNB", "RKLB", "EWY", "MU", "WTI", "XAU", "XAG"]
+        for sym in watchlist:
+            if sym in msg:
+                symbol = sym
+                break
+                
+        if not symbol:
+            fuzzy_map = {
+                "PETROL": "WTI", "OIL": "WTI", "CRUDE": "WTI",
+                "ALTIN": "XAU", "GOLD": "XAU",
+                "GÜMÜŞ": "XAG", "SILVER": "XAG",
+                "S&P 500": "SPY", "SPX": "SPY", "NASDAQ": "SPY"
+            }
+            for kw, sym in fuzzy_map.items():
+                if kw in msg:
+                    symbol = sym
+                    break
+                    
+        if not symbol:
+            return None
+            
+        import re
+        numbers = [float(n) for n in re.findall(r"\d+\.\d+|\d+", msg)]
+        
+        pyth_id, full_symbol = pyth_client.get_pyth_id(symbol)
+        if not pyth_id:
+            return None
+            
+        current_price = await pyth_client.get_active_price(symbol, pyth_id)
+        if not current_price:
+            return None
+            
+        target_candidates = []
+        for num in numbers:
+            if 0.5 * current_price <= num <= 2.0 * current_price:
+                diff = abs(num - current_price)
+                if diff > 0.05:
+                    target_candidates.append((diff, num))
+                    
+        if not target_candidates:
+            return None
+            
+        # Filter out numbers that are extremely close to the current price (likely just the user mentioning the current price)
+        # if there are other candidates that are further away.
+        has_far_candidate = any((diff / current_price) >= 0.003 for diff, num in target_candidates)
+        if has_far_candidate:
+            target_candidates = [(diff, num) for diff, num in target_candidates if (diff / current_price) >= 0.002]
+            
+        if not target_candidates:
+            return None
+            
+        target_candidates.sort(key=lambda x: x[0])
+        target_price = target_candidates[0][1]
+        
+        import pytz
+        from datetime import datetime
+        et_tz = pytz.timezone("US/Eastern")
+        now_et = datetime.now(et_tz)
+        total_minutes = now_et.hour * 60 + now_et.minute
+        
+        is_commodity = any(c in symbol for c in ["WTI", "XAU", "XAG", "GOLD", "SILVER"])
+        close_mins = 1020 if is_commodity else 960
+        minutes_to_close = max(0, close_mins - total_minutes)
+        
+        if now_et.weekday() >= 5 or total_minutes >= close_mins or total_minutes < 570:
+            minutes_to_close = 60
+            
+        from_ts, to_ts = pyth_client.get_previous_close_times(symbol)
+        ref_price = await pyth_client.get_historical_candle_price(
+            full_symbol or symbol, pyth_id, from_ts, to_ts, price_type='close'
+        )
+        if not ref_price:
+            ref_price = current_price
+            
+        import backtester
+        res = await backtester.backtest_hit_bet(symbol, current_price, ref_price, target_price, minutes_to_close, lookback_days=60)
+        
+        return {
+            "symbol": symbol,
+            "current_price": current_price,
+            "target_price": target_price,
+            "minutes_to_close": minutes_to_close,
+            "hit_rate": res.get("hit_rate", 0.0),
+            "win_rate": res.get("win_rate", 100.0),
+            "total_similar_days": res.get("total_similar_days", 0)
+        }
+    except Exception as e:
+        print(f"Error in get_user_query_stats: {e}")
+        return None
+
 @app.post("/api/chat")
 async def chat_with_agent(payload: dict):
     user_message = payload.get("message", "")
@@ -569,22 +663,59 @@ async def chat_with_agent(payload: dict):
                 
     # Time context
     import pytz
-    from datetime import datetime
+    from datetime import datetime, timedelta
     et_tz = pytz.timezone("US/Eastern")
     tr_tz = pytz.timezone("Europe/Istanbul")
     now_et = datetime.now(et_tz)
     now_tr = datetime.now(tr_tz)
     
+    # Calculate remaining time to Friday 16:00 ET (weekly stock market close)
+    close_day = 4  # Friday
+    close_time = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+    
+    # Find the upcoming Friday 16:00 ET
+    days_ahead = close_day - now_et.weekday()
+    if days_ahead < 0 or (days_ahead == 0 and now_et >= close_time):
+        days_ahead += 7
+        
+    next_close_et = close_time + timedelta(days=days_ahead)
+    time_left = next_close_et - now_et
+    
+    hours_left = int(time_left.total_seconds() // 3600)
+    mins_left = int((time_left.total_seconds() % 3600) // 60)
+    time_left_str = f"{hours_left} saat {mins_left} dakika"
+    
     time_context = (
         f"- Güncel Tarih ve Saat: {now_tr.strftime('%Y-%m-%d %H:%M:%S')} (Türkiye Saati) | {now_et.strftime('%Y-%m-%d %H:%M:%S')} (ABD Doğu Saati - ET)\n"
         f"- Haftanın Günü: {now_tr.strftime('%A')}\n"
+        f"- Cuma Günü Haftalık Hisse Senetleri Bahis Kapanışına (16:00 ET / 23:00 TR) Kalan Kesin Süre: {time_left_str}\n"
     )
     
+    # Fetch target statistics if user is asking about a specific target
+    stats_msg = ""
+    try:
+        stats = await get_user_query_stats(user_message)
+        if stats:
+            stats_msg = (
+                f"\n[KULLANICI SORUSUNA İLİŞKİN KANTİTATİF ANALİZ SONUÇLARI]\n"
+                f"- Analiz Edilen Varlık: {stats['symbol']}\n"
+                f"- Canlı Spot Fiyat: ${stats['current_price']:.4f}\n"
+                f"- Kullanıcının Bahsettiği Hedef Seviye: ${stats['target_price']:.4f}\n"
+                f"- Seans Kapanışına Kalan Süre: {stats['minutes_to_close']} dakika ({stats['minutes_to_close'] // 60} saat {stats['minutes_to_close'] % 60} dakika)\n"
+                f"- Son 60 Günde Benzer Gün Koşulları (Örneklem Sayısı): {stats['total_similar_days']} gün\n"
+                f"- Tarihsel Olarak Kalan Sürede Hedefe Değme Olasılığı (Hit/Touch Rate): %{stats['hit_rate']:.1f}\n"
+                f"- Bahsin Kazanma İhtimali (Hedefe Temas Etmeme / NO Bet Kazanma Oranı): %{stats['win_rate']:.1f}\n"
+                f"KURAL: Yukarıdaki simülasyon ve olasılık yüzdelerini (örneğin %{stats['hit_rate']:.1f} hedefe değme veya %{stats['win_rate']:.1f} kazanma olasılığı) doğrudan ve kesin olarak kullanarak kullanıcının sorusunu matematiksel olarak yanıtla. Sayıları asla kafandan uydurma.\n"
+            )
+    except Exception as stat_err:
+        print(f"Failed to generate custom query stats: {stat_err}")
+        
     system_prompt = (
         "Sen 'Antigravity' tarafından geliştirilmiş, Polymarket üzerinde çalışan yapay zeka tabanlı bir kantitatif algoritmasın (AI Quant Agent).\n"
         "Görevin, kullanıcının senin kararların, işlemlerin ve genel portföyün hakkında sorduğu sorulara yanıt vermek.\n\n"
         "Şu anki sistem durumun ve portföyün aşağıdadır:\n"
         f"- Aktif İşlem Modu: {trading_mode}\n"
+        f"- Risk Profilini Değiştirme ve Anlık Piyasa Taraması Yapabilme: Arayüz üzerinden veya kullanıcı doğrudan yazarak bunu tetikleyebilir.\n"
         f"- Risk Profili: {risk_profile}\n"
         f"- Sanal Bakiye: ${v_bal:.2f} (Net Varlık/Equity: ${v_eq:.2f})\n"
         f"- Gerçek Bakiye: ${r_bal:.2f} (Net Varlık/Equity: ${r_eq:.2f})\n\n"
@@ -598,16 +729,18 @@ async def chat_with_agent(payload: dict):
         f"{signals_str}\n"
         "Son Karar ve Sistem Günlüklerin:\n"
         f"{logs_str}\n"
-        f"{action_status_msg}\n\n"
+        f"{action_status_msg}\n"
+        f"{stats_msg}\n"
         "Kurallar:\n"
         "1. Sorulara her zaman samimi, profesyonel, anlaşılır bir Türkçe ile yanıt ver.\n"
         "2. Verdiğin kararların (örneğin WTI veya XAU alımları) arkasındaki mantığı sorulursa, yukarıdaki sinyal ve günlük bilgilerine bakarak 'Edge' (avantaj) ve Quant olasılıklarını kullanarak açıkla.\n"
         "3. Eğer kullanıcı ne yaptığını sorursa, yukarıdaki günlüklere dayanarak son 24 saatte gerçekleştirdiğin eylemlerin (örneğin parametre optimizasyonu, tarama, bakiye eşitleme) özetini geç.\n"
         "4. Yanıtlarını kısa ve öz tut, gereksiz laf kalabalığı yapma. Markdown formatında yanıt ver.\n"
         "5. BAHİS DEĞERLENDİRME KURALLARI:\n"
-        "   - Kullanıcı 'hit' (temas) veya 'close' (kapanış) bahisleri hakkında soru sorarsa, yukarıdaki 'Canlı Piyasa Fiyatları' listesindeki fiyatı ve hedefi karşılaştırarak analiz yap.\n"
-        "   - Örneğin, kullanıcı SPY 740 hit beti için NO aldığını ve fiyatın 746.50 olduğunu söylüyorsa; NO bahsinin kazanması için fiyatın 740'a değmemesi gerekir. Fiyat 746.50 olduğu için henüz değmemiştir, yani kullanıcı şu an kazanmaktadır. Beklentisi doğrudur.\n"
-        "   - Haftalık Polymarket hisse senedi bahisleri Cuma günü saat 16:00 ET (23:00 TR) itibarıyla sonlanır. Kalan süreyi gün ve saat cinsinden hesapla ve volatilitenin (SPY için günlük ortalama %1.0) bu sürede hedefi delip geçme riskini matematiksel olarak yorumla.\n"
+        "   - Kullanıcı 'hit' (temas) veya WTI/XAU/hisse senedi bahisleri hakkında soru sorarsa, yukarıdaki 'Canlı Piyasa Fiyatları' listesindeki fiyatı ve hedefi karşılaştırarak analiz yap.\n"
+        "   - Örneğin, WTI veya SPY gibi bir varlık için NO/YES bahsi aldığını söylüyorsa, canlı spot fiyatı hedef fiyatla karşılaştır. Eğer NO almışsa ve fiyat hedefe henüz değmemişse, kullanıcının şu an kazanmakta olduğunu belirt.\n"
+        "   - Kalan Süre Kuralı: Haftalık Polymarket hisse senedi bahisleri Cuma günü saat 16:00 ET (23:00 TR) itibarıyla sonlanır. Kesinlikle kendi kafandan kalan süre hesabı yapma! Yukarıda 'Canlı Zaman Bağlamı' kısmında hesaplanan 'kalan kesin süre' değerini (örneğin '4 saat 1 dakika') birebir kullan. Bu süreyi temel alarak volatilitenin (SPY için günlük ortalama %1.0) bu sürede hedefi delip geçme riskini matematiksel olarak yorumla.\n"
+        "   - İstatistikler Kuralı: Eğer yukarıda [KULLANICI SORUSUNA İLİŞKİN KANTİTATİF ANALİZ SONUÇLARI] başlığı altında hedefe değme olasılığı (hit_rate) ve bahsin kazanma ihtimali (win_rate) istatistikleri verilmişse, bu yüzdeleri ve örneklem gün sayısını doğrudan kullanıcının sorusunu yanıtlamak için kullan. Sayıları kesinlikle değiştirme veya uydurma. Eğer bu istatistikler verilmişse, analizinde mutlaka bu tarihsel olasılık verilerini ön plana çıkar.\n"
         "6. DİL KALİTESİ: Kesinlikle Türkçe dışı kelimeler veya yabancı karakterler (Örn: '現在ki', 'chance', 'risk-free') kullanma. Akıcı, profesyonel bir Türkçe kullan.\n"
     )
     

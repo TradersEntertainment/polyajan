@@ -148,6 +148,8 @@ async def fetch_historical_candles(symbol: str, lookback_days: int) -> list:
         for candle in curr_c:
             price = candle["open"]
             diff = ((price - prev_close) / prev_close) * 100
+            low_pct = ((candle["low"] - prev_close) / prev_close) * 100
+            high_pct = ((candle["high"] - prev_close) / prev_close) * 100
             
             is_commodity = any(c in symbol_up for c in ["WTI", "XAU", "XAG", "GOLD", "SILVER"])
             close_mins = 1020 if is_commodity else 960
@@ -157,6 +159,8 @@ async def fetch_historical_candles(symbol: str, lookback_days: int) -> list:
                 "hour": candle["hour"],
                 "price": price,
                 "diff_pct": diff,
+                "low_pct": low_pct,
+                "high_pct": high_pct,
                 "direction": "UP" if diff > 0 else "DOWN",
                 "minutes_to_close": minutes_to_close
             })
@@ -352,6 +356,90 @@ async def backtest_strike_bet(symbol: str, current_price: float, ref_price: floa
 
     return {
         "win_rate": win_rate,
+        "total_similar_days": total_similar,
+        "win_count": win_count,
+        "status": "success"
+    }
+
+async def backtest_hit_bet(symbol: str, current_price: float, ref_price: float, target_price: float, minutes_to_close: int, lookback_days: int) -> dict:
+    """
+    Backtests a hit/touch option (e.g. SPY hits $740) during the remaining session time.
+    Calculates the statistical probability of the price touching or crossing the target
+    during the remaining minutes of the session, based on historical lookback.
+    """
+    days = await fetch_historical_candles(symbol, lookback_days)
+    if not days:
+        return {"win_rate": 0.0, "total_similar_days": 0, "win_count": 0, "status": "no_data"}
+        
+    target_ratio = target_price / ref_price
+    target_diff_pct = (target_ratio - 1.0) * 100
+    current_diff_pct = ((current_price - ref_price) / ref_price) * 100
+    current_direction = "UP" if current_diff_pct >= 0 else "DOWN"
+    abs_diff = abs(current_diff_pct)
+    
+    if abs_diff < 0.01:
+        abs_diff = 0.01
+        
+    is_target_below = target_price < current_price
+    
+    at_level = []
+    similar = []
+    
+    for day in days:
+        match_idx = -1
+        for idx, snap in enumerate(day["snapshots"]):
+            if snap["direction"] != current_direction:
+                continue
+            if abs(snap["minutes_to_close"] - minutes_to_close) > 30:
+                continue
+            match_idx = idx
+            break
+            
+        if match_idx == -1:
+            continue
+            
+        has_hit = False
+        scaled_target_pct = target_diff_pct
+        
+        for snap in day["snapshots"][match_idx:]:
+            if is_target_below:
+                if snap.get("low_pct", snap["diff_pct"]) <= scaled_target_pct:
+                    has_hit = True
+                    break
+            else:
+                if snap.get("high_pct", snap["diff_pct"]) >= scaled_target_pct:
+                    has_hit = True
+                    break
+                    
+        is_win = not has_hit
+        
+        entry = {
+            "date": day["date"],
+            "is_win": is_win,
+            "has_hit": has_hit
+        }
+        
+        snap_abs = abs(day["snapshots"][match_idx]["diff_pct"])
+        if snap_abs >= abs_diff * 0.9:
+            at_level.append(entry)
+        if snap_abs >= abs_diff * 0.5:
+            similar.append(entry)
+            
+    if len(at_level) >= 3:
+        sample_pool = at_level
+    else:
+        sample_pool = similar
+        
+    total_similar = len(sample_pool)
+    win_count = sum(1 for e in sample_pool if e["is_win"])
+    hit_count = sum(1 for e in sample_pool if e["has_hit"])
+    
+    win_rate = (win_count / total_similar * 100) if total_similar > 0 else 0.0
+    hit_rate = (hit_count / total_similar * 100) if total_similar > 0 else 0.0
+    
+    return {
+        "win_rate": win_rate,  # Win rate of NO bet (stays safe)
+        "hit_rate": hit_rate,  # Probability of target hit
         "total_similar_days": total_similar,
         "win_count": win_count,
         "status": "success"
