@@ -170,6 +170,53 @@ async def test_real_trade():
             dry_run=False
         )
         
+        if res.get("success"):
+            # Record it in the database immediately as an open real trade
+            from datetime import datetime
+            now_str = datetime.now().isoformat()
+            pool = await database.get_pool()
+            
+            actual_price = res.get("price", price_limit)
+            actual_size = res.get("filled_size", size_usd)
+            shares = actual_size / actual_price
+            
+            # Simple parsing/mapping for SPY
+            symbol = "SPY"
+            direction = "UP"
+            ref_price = 755.0
+            
+            async with pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO virtual_trades (symbol, direction, ref_price, entry_price, size_usd, shares, status, created_at, polymarket_slug, clob_token_id, trade_type)
+                    VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9, 'real')
+                """, symbol, direction, ref_price, actual_price, actual_size, shares, now_str, "spy-closes-above-755", token_id)
+            
+            # Send Telegram notification
+            try:
+                telegram_token = os.getenv("TELEGRAM_TOKEN")
+                chat_id = os.getenv("CHAT_ID")
+                if telegram_token and chat_id:
+                    msg = (
+                        f"🔔 <b>[GERÇEK TEST İŞLEM AÇILDI]</b>\n\n"
+                        f"Test sayfası üzerinden manuel işlem gerçekleştirildi:\n\n"
+                        f"• <b>Enstrüman:</b> {symbol}\n"
+                        f"• <b>Yön:</b> {direction}\n"
+                        f"• <b>Büyüklük:</b> ${actual_size:.2f}\n"
+                        f"• <b>Giriş Fiyatı:</b> ${actual_price:.2f}\n"
+                        f"• <b>Piyasa:</b> {market_title}"
+                    )
+                    url_tg = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
+                    async with httpx.AsyncClient() as hc:
+                        await hc.post(url_tg, json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"}, timeout=5.0)
+            except Exception:
+                pass
+                
+            # Safely trigger auto-detect background task to run immediately
+            try:
+                asyncio.create_task(agent_coordinator.auto_detect_clob_positions())
+            except Exception:
+                pass
+                
         return {
             "status": "success" if res.get("success") else "error",
             "wallet_address": wallet_address,

@@ -111,7 +111,166 @@ def parse_market_question(question: str) -> tuple:
         
     return matched_symbol, strike_price, m_type
 
+async def auto_detect_clob_positions():
+    """
+    Auto-detects open positions on Polymarket CLOB by checking token balances 
+    of the active markets, and syncs them to the database.
+    """
+    private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
+    wallet_address = os.getenv("POLYMARKET_WALLET_ADDRESS")
+    sig_type = int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "1"))
+    
+    if not private_key or not wallet_address:
+        logger.info("Auto-detect skipped: POLYMARKET_PRIVATE_KEY or POLYMARKET_WALLET_ADDRESS not configured.")
+        return
+        
+    try:
+        from py_clob_client_v2.client import ClobClient
+        from py_clob_client_v2 import BalanceAllowanceParams, AssetType
+        
+        # Initialize client with POLY_1271 patch support
+        # Monkey patch L1 headers POLY_ADDRESS dynamically
+        import py_clob_client_v2.headers.headers as sdk_headers
+        original_create_level_1_headers = sdk_headers.create_level_1_headers
+        
+        def patched_create_level_1_headers(signer, timestamp, nonce=0, custom_address=None):
+            headers = original_create_level_1_headers(signer, timestamp, nonce)
+            headers["POLY_ADDRESS"] = wallet_address
+            return headers
+            
+        sdk_headers.create_level_1_headers = patched_create_level_1_headers
+        
+        client = ClobClient(
+            host="https://clob.polymarket.com",
+            key=private_key,
+            chain_id=137,
+            signature_type=sig_type,
+            funder=wallet_address
+        )
+        api_key = os.getenv("POLYMARKET_API_KEY")
+        api_secret = os.getenv("POLYMARKET_API_SECRET")
+        api_passphrase = os.getenv("POLYMARKET_API_PASSPHRASE")
+        
+        if not (api_key and api_secret and api_passphrase):
+            client.set_api_creds(client.create_or_derive_api_key())
+        else:
+            from py_clob_client_v2 import ApiCreds
+            creds = ApiCreds(api_key=api_key, secret=api_secret, passphrase=api_passphrase)
+            client.set_api_creds(creds)
+            
+        # Get active markets
+        active_markets = await fetch_active_polymarket_markets()
+        if not active_markets:
+            logger.info("Auto-detect: No active markets found to check balances.")
+            return
+            
+        # Get already tracked open real trades
+        pool = await database.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT clob_token_id FROM virtual_trades WHERE status = 'open' AND trade_type = 'real'")
+            tracked_tokens = {r["clob_token_id"] for r in rows if r["clob_token_id"]}
+            
+            # Find candidate tokens to check
+            candidate_tokens = []
+            for m in active_markets:
+                for token_field, direction in [("up_token_id", "UP"), ("down_token_id", "DOWN")]:
+                    tok_id = m.get(token_field)
+                    if tok_id and tok_id not in tracked_tokens:
+                        # Append metadata to reconstruct the trade later if found
+                        candidate_tokens.append({
+                            "token_id": tok_id,
+                            "symbol": m["symbol"],
+                            "direction": f"OPEN_{direction}" if m["bet_type"] == "open" else direction,
+                            "slug": m["slug"],
+                            "title": m["title"],
+                            "price": m["up_price"] if direction == "UP" else m["down_price"],
+                            "ref_price": m.get("strike_price") or 755.0  # fallback reference price
+                        })
+            
+            if not candidate_tokens:
+                logger.info("Auto-detect: No untracked candidate tokens found.")
+                return
+                
+            logger.info(f"Auto-detect: Querying CLOB balances for {len(candidate_tokens)} candidate tokens...")
+            
+            # Query balances in parallel
+            async def get_balance(cand):
+                tok_id = cand["token_id"]
+                try:
+                    # Run client.get_balance_allowance in threadpool as it is synchronous in the SDK
+                    loop = asyncio.get_event_loop()
+                    params = BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=tok_id)
+                    res = await loop.run_in_executor(None, client.get_balance_allowance, params)
+                    
+                    bal = 0.0
+                    if isinstance(res, dict):
+                        bal = float(res.get("balance", 0.0))
+                    else:
+                        bal = float(getattr(res, "balance", 0.0))
+                    return cand, bal
+                except Exception as ex:
+                    logger.error(f"Error fetching balance for token {tok_id}: {ex}")
+                    return cand, 0.0
+            
+            results = await asyncio.gather(*(get_balance(c) for c in candidate_tokens))
+            
+            now_str = datetime.now().isoformat()
+            
+            for cand, bal in results:
+                if bal >= 0.1:  # user holds at least 0.1 shares
+                    # Check again to avoid duplicate insertion due to races
+                    exists = await conn.fetchval(
+                        "SELECT COUNT(*) FROM virtual_trades WHERE status = 'open' AND clob_token_id = $1", 
+                        cand["token_id"]
+                    )
+                    if not exists:
+                        # Reconstruct entry price and size
+                        entry_price = cand["price"] if cand["price"] > 0 else 0.50
+                        
+                        # Dynamically fetch reference price if possible
+                        ref_price = cand["ref_price"]
+                        try:
+                            import pyth_client
+                            pyth_id, _ = pyth_client.get_pyth_id(cand["symbol"])
+                            if pyth_id:
+                                from_ts, to_ts = pyth_client.get_previous_close_times(cand["symbol"])
+                                ref_price_fetched = await pyth_client.get_historical_candle_price(
+                                    pyth_client.SYMBOL_MAP.get(cand["symbol"]) or cand["symbol"], pyth_id, from_ts, to_ts, price_type='close'
+                                )
+                                if ref_price_fetched:
+                                    ref_price = ref_price_fetched
+                        except Exception:
+                            pass
+                            
+                        size_usd = bal * entry_price
+                        
+                        # Insert into database as open real trade
+                        await conn.execute("""
+                            INSERT INTO virtual_trades (symbol, direction, ref_price, entry_price, size_usd, shares, status, created_at, polymarket_slug, clob_token_id, trade_type)
+                            VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9, 'real')
+                        """, cand["symbol"], cand["direction"], ref_price, entry_price, size_usd, bal, now_str, cand["slug"], cand["token_id"])
+                        
+                        logger.info(f"Auto-imported real position: {cand['symbol']} {cand['direction']} | {bal:.2f} shares")
+                        
+                        # Send Telegram notification
+                        try:
+                            msg = (
+                                f"📥 <b>[GERÇEK POZİSYON İÇE AKTARILDI]</b>\n\n"
+                                f"Cüzdanda açık olan Polymarket pozisyonu tespit edildi ve sisteme aktarıldı:\n\n"
+                                f"• <b>Enstrüman:</b> {cand['symbol']}\n"
+                                f"• <b>Yön:</b> {cand['direction']}\n"
+                                f"• <b>Adet:</b> {bal:.2f} Pay\n"
+                                f"• <b>Tahmini Değer:</b> ${size_usd:.2f}\n"
+                                f"• <b>Piyasa:</b> {cand['title']}"
+                            )
+                            await send_telegram_message(msg)
+                        except Exception:
+                            pass
+    except Exception as e:
+        logger.error(f"Error in auto_detect_clob_positions: {e}")
+
 async def fetch_active_polymarket_markets() -> list:
+
     """Scans and lists active binary Up/Down and closes-above/below strike markets on Polymarket."""
     active_markets = []
     et_tz = pytz.timezone("US/Eastern")
@@ -677,6 +836,9 @@ async def run_autonomous_scan_cycle():
     # 1. Resolve open trades
     await resolve_virtual_trades()
     
+    # 1b. Auto-detect and sync real Polymarket positions
+    await auto_detect_clob_positions()
+    
     # 2. Archive active signals
     await database.archive_all_signals()
  
@@ -1055,6 +1217,9 @@ async def agent_scheduler_loop():
 
     # Wait for pyth feed cache to initialize in main application
     await asyncio.sleep(10)
+    
+    # Auto-detect real positions on startup immediately
+    await auto_detect_clob_positions()
     
     while True:
         try:
