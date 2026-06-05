@@ -20,6 +20,22 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     await database.init_db()
+    
+    # Database cleanup for huge corrupted XAU positions due to decimal scaling bugs
+    try:
+        pool = await database.get_pool()
+        async with pool.acquire() as conn:
+            affected = await conn.execute("""
+                UPDATE virtual_trades 
+                SET shares = shares / 1000000.0, 
+                    size_usd = size_usd / 1000000.0,
+                    profit = profit / 1000000.0
+                WHERE shares > 100000.0 AND symbol = 'XAU'
+            """)
+            print(f"Startup clean: database repair affected rows: {affected}")
+    except Exception as db_clean_err:
+        print(f"Startup clean failed: {db_clean_err}")
+
     await pyth_client.init_feeds_cache()
     
     # Start the autonomous AI Agent loop

@@ -221,16 +221,22 @@ async def auto_detect_clob_positions():
                             bal = float(res.get("balance", 0.0))
                         else:
                             bal = float(getattr(res, "balance", 0.0))
+                        
+                        # Divide by 1,000,000 to convert raw contract balance to shares
+                        bal = bal / 1000000.0
                         return tok_id, is_new, extra_data, bal
                     except Exception as ex:
                         logger.error(f"Error fetching balance for token {tok_id}: {ex}")
-                        return tok_id, is_new, extra_data, 0.0
+                        return tok_id, is_new, extra_data, None
                 
                 results = await asyncio.gather(*(get_balance(t_id, is_n, data) for t_id, is_n, data in tokens_to_check))
                 
                 now_str = datetime.now().isoformat()
                 
                 for tok_id, is_new, extra_data, bal in results:
+                    if bal is None:
+                        continue
+                        
                     if is_new:
                         # Sync logic for new positions
                         if bal >= 0.1:  # user holds at least 0.1 shares
@@ -283,8 +289,11 @@ async def auto_detect_clob_positions():
                                 except Exception:
                                     pass
                     else:
-                        # Close logic for tracked positions that have been closed/sold externally
+                        # Close or partial close logic for tracked positions that have been closed/sold/bought externally
+                        db_shares = extra_data["shares"]
+                        
                         if bal < 0.1:
+                            # Fully closed
                             # Check current best bid price to calculate simulated PnL
                             sell_price = extra_data["entry_price"]
                             try:
@@ -300,7 +309,7 @@ async def auto_detect_clob_positions():
                             except Exception:
                                 pass
                                 
-                            proceeds = extra_data["shares"] * sell_price
+                            proceeds = db_shares * sell_price
                             profit = proceeds - extra_data["size_usd"]
                             status = "won" if profit >= 0 else "lost"
                             
@@ -310,7 +319,7 @@ async def auto_detect_clob_positions():
                                 WHERE id = $4
                             """, status, profit, now_str, extra_data["id"])
                             
-                            logger.info(f"Auto-resolved closed position: {extra_data['symbol']} | {extra_data['shares']:.2f} shares at ${sell_price:.2f}")
+                            logger.info(f"Auto-resolved closed position: {extra_data['symbol']} | {db_shares:.2f} shares at ${sell_price:.2f}")
                             
                             # Send Telegram notification
                             try:
@@ -318,9 +327,102 @@ async def auto_detect_clob_positions():
                                     f"🏁 <b>[GERÇEK POZİSYON KAPANDI]</b>\n\n"
                                     f"Polymarket üzerinde pozisyonun kapandığı tespit edildi. Veritabanı güncellendi:\n\n"
                                     f"• <b>Enstrüman:</b> {extra_data['symbol']}\n"
-                                    f"• <b>Adet:</b> {extra_data['shares']:.2f} Pay\n"
+                                    f"• <b>Adet:</b> {db_shares:.2f} Pay\n"
                                     f"• <b>Satış Fiyatı (Tahmini):</b> ${sell_price:.2f}\n"
                                     f"• <b>Kâr/Zarar:</b> <b>${profit:+.2f}</b>"
+                                )
+                                await send_telegram_message(msg)
+                            except Exception:
+                                pass
+                        elif bal < db_shares - 0.5:
+                            # Partial sell detected
+                            sold_shares = db_shares - bal
+                            
+                            # Fetch current best bid price to calculate simulated PnL
+                            sell_price = extra_data["entry_price"]
+                            try:
+                                url_book = f"https://clob.polymarket.com/book?token_id={tok_id}"
+                                async with httpx.AsyncClient() as hc:
+                                    resp_book = await hc.get(url_book, timeout=4.0)
+                                    if resp_book.status_code == 200:
+                                        book_data = resp_book.json()
+                                        bids = book_data.get("bids", [])
+                                        if bids:
+                                            bids_sorted = sorted(bids, key=lambda x: float(x.get("price", 0)), reverse=True)
+                                            sell_price = float(bids_sorted[0]["price"])
+                            except Exception:
+                                pass
+                                
+                            proceeds = sold_shares * sell_price
+                            ratio = sold_shares / db_shares
+                            closed_size = extra_data["size_usd"] * ratio
+                            profit = proceeds - closed_size
+                            
+                            new_size = extra_data["size_usd"] - closed_size
+                            await conn.execute("""
+                                UPDATE virtual_trades 
+                                SET shares = $1, size_usd = $2 
+                                WHERE id = $3
+                            """, bal, new_size, extra_data["id"])
+                            
+                            logger.info(f"Auto-detected partial sell: {extra_data['symbol']} | sold {sold_shares:.2f} shares, remaining {bal:.2f} shares")
+                            
+                            # Send Telegram notification
+                            try:
+                                msg = (
+                                    f"📉 <b>[KISMİ GERÇEK POZİSYON SATIŞI]</b>\n\n"
+                                    f"Polymarket üzerinde kısmi satış tespit edildi. Veritabanı güncellendi:\n\n"
+                                    f"• <b>Enstrüman:</b> {extra_data['symbol']}\n"
+                                    f"• <b>Satılan Miktar:</b> {sold_shares:.2f} Pay\n"
+                                    f"• <b>Kalan Miktar:</b> {bal:.2f} Pay\n"
+                                    f"• <b>Satış Fiyatı (Tahmini):</b> ${sell_price:.2f}\n"
+                                    f"• <b>Kâr/Zarar (Kısmi):</b> <b>${profit:+.2f}</b>"
+                                )
+                                await send_telegram_message(msg)
+                            except Exception:
+                                pass
+                        elif bal > db_shares + 0.5:
+                            # Additional buy detected
+                            bought_shares = bal - db_shares
+                            
+                            # Fetch current best ask price to calculate cost
+                            buy_price = extra_data["entry_price"]
+                            try:
+                                url_book = f"https://clob.polymarket.com/book?token_id={tok_id}"
+                                async with httpx.AsyncClient() as hc:
+                                    resp_book = await hc.get(url_book, timeout=4.0)
+                                    if resp_book.status_code == 200:
+                                        book_data = resp_book.json()
+                                        asks = book_data.get("asks", [])
+                                        if asks:
+                                            asks_sorted = sorted(asks, key=lambda x: float(x.get("price", 0)))
+                                            buy_price = float(asks_sorted[0]["price"])
+                            except Exception:
+                                pass
+                                
+                            cost = bought_shares * buy_price
+                            new_size = extra_data["size_usd"] + cost
+                            new_entry_price = new_size / bal if bal > 0 else buy_price
+                            
+                            await conn.execute("""
+                                UPDATE virtual_trades 
+                                SET shares = $1, size_usd = $2, entry_price = $3 
+                                WHERE id = $4
+                            """, bal, new_size, new_entry_price, extra_data["id"])
+                            
+                            logger.info(f"Auto-detected additional purchase: {extra_data['symbol']} | bought {bought_shares:.2f} shares, new total {bal:.2f} shares")
+                            
+                            # Send Telegram notification
+                            try:
+                                msg = (
+                                    f"📈 <b>[EK GERÇEK POZİSYON ALIMI]</b>\n\n"
+                                    f"Polymarket üzerinde ek alım tespit edildi. Veritabanı güncellendi:\n\n"
+                                    f"• <b>Enstrüman:</b> {extra_data['symbol']}\n"
+                                    f"• <b>Alınan Miktar:</b> {bought_shares:.2f} Pay\n"
+                                    f"• <b>Yeni Toplam:</b> {bal:.2f} Pay\n"
+                                    f"• <b>Alış Fiyatı (Tahmini):</b> ${buy_price:.2f}\n"
+                                    f"• <b>Maliyet:</b> ${cost:.2f}\n"
+                                    f"• <b>Yeni Ort. Giriş:</b> ${new_entry_price:.2f}"
                                 )
                                 await send_telegram_message(msg)
                             except Exception:
