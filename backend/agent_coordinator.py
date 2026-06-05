@@ -688,7 +688,7 @@ async def run_parameter_tuning_agent(symbol: str, bet_type: str):
         {"role": "user", "content": user_prompt}
     ]
 
-    response_text = await call_groq_api(messages)
+    response_text = await call_groq_api(messages, model="llama-3.1-8b-instant")
     try:
         decision = json.loads(response_text)
         new_lookback = int(decision.get("optimized_lookback_days", current_lookback))
@@ -772,7 +772,7 @@ async def run_portfolio_risk_agent():
             {"role": "user", "content": user_prompt}
         ]
         
-        response_text = await call_groq_api(messages)
+        response_text = await call_groq_api(messages, model="llama-3.1-8b-instant")
         decision = json.loads(response_text)
         new_risk = decision.get("risk_profile", current_risk_profile).upper()
         justification = decision.get("justification", "No explanation provided")
@@ -829,7 +829,7 @@ async def run_trade_post_mortem(trade_id: int, symbol: str, direction: str, ref_
         {"role": "user", "content": user_prompt}
     ]
     
-    response_text = await call_groq_api(messages)
+    response_text = await call_groq_api(messages, model="llama-3.1-8b-instant")
     try:
         decision = json.loads(response_text)
         analysis = decision.get("post_mortem", "Analiz yapılamadı.")
