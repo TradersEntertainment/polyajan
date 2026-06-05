@@ -594,6 +594,16 @@ function App() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
+            <a
+              href="https://polymarket.com/@financebot"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-4 py-2.5 bg-neutral-900 hover:bg-neutral-800 text-neutral-300 hover:text-white border border-neutral-800 hover:border-neutral-700 rounded-xl font-medium transition duration-200 flex items-center gap-2 text-sm shadow-inner"
+            >
+              <ExternalLink size={14} className="text-purple-400" />
+              <span>Polymarket Profili</span>
+            </a>
+
             <button
               onClick={fetchData}
               disabled={isLoading}
