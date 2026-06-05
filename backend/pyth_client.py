@@ -19,13 +19,83 @@ def is_cme_business_day(d: date) -> bool:
     """Check if date is a business day (not weekend or major CME holiday)."""
     if d.weekday() >= 5:  # Saturday or Sunday
         return False
-    # Standard major CME holidays
-    if (d.month == 1 and d.day == 1):  # New Year
+        
+    year = d.year
+    month = d.month
+    day = d.day
+    
+    # 1. New Year's Day (Jan 1)
+    if month == 1 and day == 1:
         return False
-    if (d.month == 7 and d.day == 4):  # Independence Day
+        
+    # 2. Martin Luther King Jr. Day (Third Monday of January)
+    if month == 1 and d.weekday() == 0 and 15 <= day <= 21:
         return False
-    if (d.month == 12 and d.day == 25): # Christmas
+        
+    # 3. Washington's Birthday / Presidents' Day (Third Monday of February)
+    if month == 2 and d.weekday() == 0 and 15 <= day <= 21:
         return False
+        
+    # 4. Good Friday (Variable date computed using Spencer Jones Easter formula)
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d_val = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d_val - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month_easter = (h + l - 7 * m + 114) // 31
+    day_easter = ((h + l - 7 * m + 114) % 31) + 1
+    
+    easter_date = date(year, month_easter, day_easter)
+    good_friday = easter_date - timedelta(days=2)
+    if d == good_friday:
+        return False
+        
+    # 5. Memorial Day (Last Monday of May)
+    if month == 5 and d.weekday() == 0 and day >= 25:
+        return False
+        
+    # 6. Juneteenth (June 19 - observed on nearest weekday if weekend)
+    if month == 6:
+        if day == 19:
+            return False
+        if day == 18 and d.weekday() == 4: # Observed Friday June 18
+            return False
+        if day == 20 and d.weekday() == 0: # Observed Monday June 20
+            return False
+            
+    # 7. Independence Day (July 4 - observed on nearest weekday if weekend)
+    if month == 7:
+        if day == 4:
+            return False
+        if day == 3 and d.weekday() == 4: # Observed Friday July 3
+            return False
+        if day == 5 and d.weekday() == 0: # Observed Monday July 5
+            return False
+            
+    # 8. Labor Day (First Monday of September)
+    if month == 9 and d.weekday() == 0 and 1 <= day <= 7:
+        return False
+        
+    # 9. Thanksgiving Day (Fourth Thursday of November)
+    if month == 11 and d.weekday() == 3 and 22 <= day <= 28:
+        return False
+        
+    # 10. Christmas Day (December 25 - observed on nearest weekday if weekend)
+    if month == 12:
+        if day == 25:
+            return False
+        if day == 24 and d.weekday() == 4: # Observed Friday Dec 24
+            return False
+        if day == 26 and d.weekday() == 0: # Observed Monday Dec 26
+            return False
+            
     return True
 
 def get_wti_contract_ltd(delivery_year: int, delivery_month: int) -> date:
