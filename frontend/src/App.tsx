@@ -170,6 +170,15 @@ function App() {
   };
 
   const closeTrade = async (tradeId: number, symbol: string) => {
+    const password = window.prompt("Güvenlik Onayı: Lütfen pozisyonu kapatmak için şifreyi girin:");
+    if (password === null) {
+      return; // Canceled
+    }
+    if (password !== "allah") {
+      window.alert("Hatalı şifre! Pozisyon kapatma işlemi iptal edildi.");
+      return;
+    }
+
     if (!window.confirm(`${symbol} pozisyonunu kapatmak istediğinize emin misiniz? Paylar mevcut en iyi bid fiyatından parça parça satılacaktır.`)) {
       return;
     }
@@ -193,6 +202,15 @@ function App() {
   };
 
   const triggerReset = async () => {
+    const password = window.prompt("Güvenlik Onayı: Portföyü sıfırlamak için lütfen şifreyi girin:");
+    if (password === null) {
+      return; // Canceled
+    }
+    if (password !== "allah") {
+      window.alert("Hatalı şifre! Portföy sıfırlama işlemi iptal edildi.");
+      return;
+    }
+
     if (!window.confirm("Portföy geçmişini ve işlemleri sıfırlamak istediğinize emin misiniz? (Gerçek bakiyeniz sıfırlanmaz, sadece işlem geçmişi temizlenir.)")) {
       return;
     }
