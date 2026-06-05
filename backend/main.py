@@ -504,6 +504,32 @@ async def chat_with_agent(payload: dict):
     r_eq = portfolio.get("real", {}).get("equity", 0.0)
     risk_profile = portfolio.get("risk_profile", "MODERATE")
     
+    # Fetch live prices for major assets
+    live_prices_str = ""
+    assets_to_fetch = ["SPY", "PLTR", "TSLA", "NVDA", "AAPL", "AMZN", "META", "GOOGL", "MSFT", "NFLX", "COIN", "HOOD", "ABNB", "RKLB", "EWY", "MU", "WTI", "XAU", "XAG"]
+    for asset in assets_to_fetch:
+        pyth_id, _ = pyth_client.get_pyth_id(asset)
+        if pyth_id:
+            try:
+                price = await pyth_client.get_active_price(asset, pyth_id)
+                if price:
+                    live_prices_str += f"- {asset}: ${price:.4f}\n"
+            except Exception:
+                pass
+                
+    # Time context
+    import pytz
+    from datetime import datetime
+    et_tz = pytz.timezone("US/Eastern")
+    tr_tz = pytz.timezone("Europe/Istanbul")
+    now_et = datetime.now(et_tz)
+    now_tr = datetime.now(tr_tz)
+    
+    time_context = (
+        f"- Güncel Tarih ve Saat: {now_tr.strftime('%Y-%m-%d %H:%M:%S')} (Türkiye Saati) | {now_et.strftime('%Y-%m-%d %H:%M:%S')} (ABD Doğu Saati - ET)\n"
+        f"- Haftanın Günü: {now_tr.strftime('%A')}\n"
+    )
+    
     system_prompt = (
         "Sen 'Antigravity' tarafından geliştirilmiş, Polymarket üzerinde çalışan yapay zeka tabanlı bir kantitatif algoritmasın (AI Quant Agent).\n"
         "Görevin, kullanıcının senin kararların, işlemlerin ve genel portföyün hakkında sorduğu sorulara yanıt vermek.\n\n"
@@ -512,6 +538,10 @@ async def chat_with_agent(payload: dict):
         f"- Risk Profili: {risk_profile}\n"
         f"- Sanal Bakiye: ${v_bal:.2f} (Net Varlık/Equity: ${v_eq:.2f})\n"
         f"- Gerçek Bakiye: ${r_bal:.2f} (Net Varlık/Equity: ${r_eq:.2f})\n\n"
+        f"Canlı Zaman Bağlamı:\n"
+        f"{time_context}\n"
+        "Canlı Piyasa Fiyatları (Pyth):\n"
+        f"{live_prices_str}\n"
         "Açık ve Sonuçlanan Son İşlemlerin:\n"
         f"{trades_str}\n"
         "Aktif Taranan Sinyallerin:\n"
@@ -523,6 +553,11 @@ async def chat_with_agent(payload: dict):
         "2. Verdiğin kararların (örneğin WTI veya XAU alımları) arkasındaki mantığı sorulursa, yukarıdaki sinyal ve günlük bilgilerine bakarak 'Edge' (avantaj) ve Quant olasılıklarını kullanarak açıkla.\n"
         "3. Eğer kullanıcı ne yaptığını sorarsa, yukarıdaki günlüklere dayanarak son 24 saatte gerçekleştirdiğin eylemlerin (örneğin parametre optimizasyonu, tarama, bakiye eşitleme) özetini geç.\n"
         "4. Yanıtlarını kısa ve öz tut, gereksiz laf kalabalığı yapma. Markdown formatında yanıt ver.\n"
+        "5. BAHİS DEĞERLENDİRME KURALLARI:\n"
+        "   - Kullanıcı 'hit' (temas) veya 'close' (kapanış) bahisleri hakkında soru sorarsa, yukarıdaki 'Canlı Piyasa Fiyatları' listesindeki fiyatı ve hedefi karşılaştırarak analiz yap.\n"
+        "   - Örneğin, kullanıcı SPY 740 hit beti için NO aldığını ve fiyatın 746.50 olduğunu söylüyorsa; NO bahsinin kazanması için fiyatın 740'a değmemesi gerekir. Fiyat 746.50 olduğu için henüz değmemiştir, yani kullanıcı şu an kazanmaktadır. Beklentisi doğrudur.\n"
+        "   - Haftalık Polymarket hisse senedi bahisleri Cuma günü saat 16:00 ET (23:00 TR) itibarıyla sonlanır. Kalan süreyi gün ve saat cinsinden hesapla ve volatilitenin (SPY için günlük ortalama %1.0) bu sürede hedefi delip geçme riskini matematiksel olarak yorumla.\n"
+        "6. DİL KALİTESİ: Kesinlikle Türkçe dışı kelimeler veya yabancı karakterler (Örn: '現在ki', 'chance', 'risk-free') kullanma. Akıcı, profesyonel bir Türkçe kullan.\n"
     )
     
     messages = [
