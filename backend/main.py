@@ -333,6 +333,85 @@ async def reset_portfolio():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/debug-balances")
+async def debug_balances():
+    try:
+        import os
+        from py_clob_client_v2.client import ClobClient
+        from py_clob_client_v2 import BalanceAllowanceParams, AssetType
+        
+        private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
+        wallet_address = os.getenv("POLYMARKET_WALLET_ADDRESS")
+        sig_type = int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "1"))
+        
+        if not private_key or not wallet_address:
+            return {"error": "Credentials missing"}
+            
+        client = ClobClient(
+            host="https://clob.polymarket.com",
+            key=private_key,
+            chain_id=137,
+            signature_type=sig_type,
+            funder=wallet_address
+        )
+        api_key = os.getenv("POLYMARKET_API_KEY")
+        api_secret = os.getenv("POLYMARKET_API_SECRET")
+        api_passphrase = os.getenv("POLYMARKET_API_PASSPHRASE")
+        
+        if not (api_key and api_secret and api_passphrase):
+            client.set_api_creds(client.create_or_derive_api_key())
+        else:
+            from py_clob_client_v2 import ApiCreds
+            creds = ApiCreds(api_key=api_key, secret=api_secret, passphrase=api_passphrase)
+            client.set_api_creds(creds)
+            
+        # Get active markets
+        from agent_coordinator import fetch_active_polymarket_markets
+        active_markets = await fetch_active_polymarket_markets()
+        
+        results = []
+        import asyncio
+        
+        async def check_token(m, token_id, direction):
+            if not token_id:
+                return
+            try:
+                loop = asyncio.get_event_loop()
+                params = BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id)
+                res = await loop.run_in_executor(None, client.get_balance_allowance, params)
+                bal = 0.0
+                if isinstance(res, dict):
+                    bal = float(res.get("balance", 0.0))
+                else:
+                    bal = float(getattr(res, "balance", 0.0))
+                
+                results.append({
+                    "symbol": m["symbol"],
+                    "title": m["title"],
+                    "direction": direction,
+                    "token_id": token_id,
+                    "balance": bal
+                })
+            except Exception as e:
+                results.append({
+                    "symbol": m["symbol"],
+                    "token_id": token_id,
+                    "error": str(e)
+                })
+                
+        tasks = []
+        for m in active_markets:
+            tasks.append(check_token(m, m.get("up_token_id"), "UP"))
+            tasks.append(check_token(m, m.get("down_token_id"), "DOWN"))
+            
+        await asyncio.gather(*tasks)
+        return {
+            "active_markets_count": len(active_markets),
+            "balances": [r for r in results if r.get("balance", 0) > 0 or r.get("error")]
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 # --- Serve Frontend Static Files ---
 frontend_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/dist"))
 

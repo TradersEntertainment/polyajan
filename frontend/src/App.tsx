@@ -16,7 +16,8 @@ import {
   Briefcase,
   History,
   XCircle,
-  Loader2
+  Loader2,
+  LayoutGrid
 } from 'lucide-react';
 
 // API Configuration
@@ -91,7 +92,7 @@ interface VirtualTrade {
 }
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'signals' | 'tunings' | 'logs' | 'portfolio'>('signals');
+  const [activeTab, setActiveTab] = useState<'terminal' | 'signals' | 'tunings' | 'logs' | 'portfolio'>('terminal');
   const [signals, setSignals] = useState<Signal[]>([]);
   const [tunings, setTunings] = useState<Tuning[]>([]);
   const [logs, setLogs] = useState<AgentLog[]>([]);
@@ -510,7 +511,18 @@ function App() {
 
         {/* Tab Controls and Search */}
         <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-4 mb-6 border-b border-neutral-800/60 pb-5">
-          <div className="flex p-1 bg-neutral-900 border border-neutral-800 rounded-xl max-w-md w-full sm:w-auto overflow-x-auto">
+          <div className="flex p-1 bg-neutral-900 border border-neutral-800 rounded-xl max-w-lg w-full sm:w-auto overflow-x-auto">
+            <button
+              onClick={() => setActiveTab('terminal')}
+              className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-sm font-medium transition duration-200 flex items-center justify-center gap-2 whitespace-nowrap ${
+                activeTab === 'terminal'
+                  ? 'bg-neutral-800 text-white shadow-md'
+                  : 'text-neutral-400 hover:text-neutral-200'
+              }`}
+            >
+              <LayoutGrid size={14} />
+              Terminal (Genel Bakış)
+            </button>
             <button
               onClick={() => setActiveTab('signals')}
               className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-sm font-medium transition duration-200 flex items-center justify-center gap-2 whitespace-nowrap ${
@@ -580,6 +592,288 @@ function App() {
           </div>
         ) : (
           <>
+            {/* Tab: Terminal (Genel Bakış) */}
+            {activeTab === 'terminal' && (
+              <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start animate-fade-in text-left">
+                {/* Left Column - Portfolio & Watchlist (Width: 35%) */}
+                <div className="xl:col-span-4 space-y-6">
+                  {/* Portfolio Card */}
+                  <div className="bg-gradient-to-tr from-neutral-900/80 to-purple-950/10 border border-neutral-800 rounded-2xl p-5 relative overflow-hidden group hover:border-purple-500/20 transition duration-300">
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500/5 rounded-full blur-3xl group-hover:bg-purple-500/10 transition duration-300"></div>
+                    <div className="flex items-center justify-between mb-4 border-b border-neutral-800/80 pb-3">
+                      <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                        <Briefcase size={16} className="text-purple-400" />
+                        Portföy Modu ({portfolioView === 'real' ? 'Gerçek' : 'Sanal'})
+                      </h4>
+                      <div className="flex p-0.5 bg-neutral-950 border border-neutral-850 rounded-lg">
+                        <button
+                          onClick={() => setPortfolioView('virtual')}
+                          className={`px-2.5 py-1 rounded-md text-[10px] font-bold uppercase transition ${
+                            portfolioView === 'virtual'
+                              ? 'bg-purple-600 text-white shadow-sm'
+                              : 'text-neutral-400 hover:text-neutral-200'
+                          }`}
+                        >
+                          Sanal
+                        </button>
+                        <button
+                          onClick={() => setPortfolioView('real')}
+                          className={`px-2.5 py-1 rounded-md text-[10px] font-bold uppercase transition ${
+                            portfolioView === 'real'
+                              ? 'bg-emerald-600 text-white shadow-sm'
+                              : 'text-neutral-400 hover:text-neutral-200'
+                          }`}
+                        >
+                          Gerçek
+                        </button>
+                      </div>
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-4 mb-4">
+                      <div className="bg-neutral-950/50 rounded-xl p-3 border border-neutral-850">
+                        <span className="text-[10px] text-neutral-500 block uppercase font-medium">Net Varlık (Equity)</span>
+                        <span className="text-xl font-bold text-white tracking-tight">
+                          ${portfolio ? (portfolioView === 'real' ? portfolio.real.equity : portfolio.virtual.equity).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '1,000.00'}
+                        </span>
+                      </div>
+                      <div className="bg-neutral-950/50 rounded-xl p-3 border border-neutral-850">
+                        <span className="text-[10px] text-neutral-500 block uppercase font-medium">Serbest Nakit</span>
+                        <span className="text-xl font-bold text-neutral-300 tracking-tight">
+                          ${portfolio ? (portfolioView === 'real' ? portfolio.real.balance : portfolio.virtual.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '1,000.00'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="bg-neutral-950/50 rounded-xl p-3 border border-neutral-850 flex items-center justify-between text-xs">
+                      <span className="text-neutral-400">Risk Profili:</span>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                        portfolio?.risk_profile === 'CONSERVATIVE'
+                          ? 'bg-blue-500/10 text-blue-400 border border-blue-500/35'
+                          : portfolio?.risk_profile === 'AGGRESSIVE'
+                            ? 'bg-rose-500/10 text-rose-400 border border-rose-500/35'
+                            : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/35'
+                      }`}>
+                        {portfolio ? portfolio.risk_profile : 'MODERATE'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Watchlist & Parameters Card */}
+                  <div className="bg-neutral-900/40 border border-neutral-800 rounded-2xl p-5 backdrop-blur-sm relative overflow-hidden">
+                    <h4 className="text-sm font-bold text-white mb-3 flex items-center justify-between">
+                      <span className="flex items-center gap-2">
+                        <Sliders size={16} className="text-indigo-400" />
+                        AI Parametreleri & Watchlist
+                      </span>
+                      <span className="text-[10px] text-neutral-500 font-mono">En Son {filteredTunings.length}</span>
+                    </h4>
+                    <div className="max-h-[300px] overflow-y-auto pr-1 space-y-2 scrollbar-thin">
+                      {filteredTunings.slice(0, 10).map((t, idx) => (
+                        <div key={idx} className="bg-neutral-950/40 border border-neutral-850 rounded-xl p-2.5 hover:border-neutral-800 transition flex items-center justify-between text-xs">
+                          <div>
+                            <span className="font-bold text-white block">{t.symbol}</span>
+                            <span className="text-[9px] text-neutral-550 uppercase">{t.bet_type === 'open' ? 'Açılış' : 'Kapanış'}</span>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-neutral-450 font-mono block">Lookback: {t.lookback_days}g</span>
+                            <span className="text-emerald-400 font-bold font-mono">Yield: %{t.min_expected_yield.toFixed(1)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Center Column - Positions & Signals (Width: 42%) */}
+                <div className="xl:col-span-5 space-y-6">
+                  {/* Open Positions Widget */}
+                  <div className="bg-neutral-900/40 border border-neutral-800 rounded-2xl p-5 backdrop-blur-sm relative">
+                    <h4 className="text-sm font-bold text-white mb-3 flex items-center justify-between">
+                      <span className="flex items-center gap-2">
+                        <Zap size={16} className="text-emerald-400" />
+                        Açık Pozisyonlar ({filteredCurrentTrades.filter(t => t.status === 'open').length})
+                      </span>
+                    </h4>
+                    
+                    {filteredCurrentTrades.filter(t => t.status === 'open').length === 0 ? (
+                      <div className="text-center py-8 bg-neutral-950/20 border border-neutral-850 rounded-xl">
+                        <p className="text-xs text-neutral-500">Aktif açık pozisyon bulunmamaktadır.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1 scrollbar-thin">
+                        {filteredCurrentTrades.filter(t => t.status === 'open').map((trade) => {
+                          const sig = signals.find(s => s.symbol === trade.symbol && s.direction === trade.direction && s.status === 'active');
+                          const livePrice = trade.current_price ?? sig?.polymarket_price ?? trade.entry_price;
+                          const currentValue = trade.shares * livePrice;
+                          const uPnL = currentValue - trade.size_usd;
+                          
+                          return (
+                            <div key={trade.id} className="bg-neutral-950/50 border border-neutral-850 rounded-xl p-3 flex flex-col justify-between hover:border-neutral-800 transition">
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-white text-sm">{trade.symbol}</span>
+                                  <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase ${
+                                    trade.direction.includes('UP')
+                                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                      : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                                  }`}>
+                                    {trade.direction}
+                                  </span>
+                                </div>
+                                <span className="text-[10px] text-neutral-500 font-mono">{formatDate(trade.created_at)}</span>
+                              </div>
+                              <div className="grid grid-cols-3 gap-2 text-[10px] border-b border-neutral-850 pb-2 mb-2">
+                                <div>
+                                  <span className="text-neutral-500 block">Giriş Fiyatı:</span>
+                                  <span className="font-mono text-neutral-300">${trade.entry_price.toFixed(2)}</span>
+                                </div>
+                                <div>
+                                  <span className="text-neutral-500 block">Yatırım:</span>
+                                  <span className="font-mono text-neutral-300">${trade.size_usd.toFixed(1)}</span>
+                                </div>
+                                <div>
+                                  <span className="text-neutral-500 block">Kâr/Zarar:</span>
+                                  <span className={`font-mono font-bold ${uPnL >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {uPnL >= 0 ? '+' : ''}${uPnL.toFixed(2)}
+                                  </span>
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => closeTrade(trade.id, trade.symbol)}
+                                disabled={closingTradeId === trade.id}
+                                className="w-full py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-350 border border-rose-500/20 rounded-md text-[10px] font-bold uppercase tracking-wider transition duration-200 flex items-center justify-center gap-1.5 disabled:opacity-50"
+                              >
+                                {closingTradeId === trade.id ? (
+                                  <><Loader2 size={10} className="animate-spin" /> Satılıyor...</>
+                                ) : (
+                                  <><XCircle size={10} /> Pozisyonu Kapat</>
+                                )}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Active Signals Widget */}
+                  <div className="bg-neutral-900/40 border border-neutral-800 rounded-2xl p-5 backdrop-blur-sm relative">
+                    <h4 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
+                      <Sparkles size={16} className="text-purple-400 animate-pulse" />
+                      Aktif Sinyaller ({filteredSignals.length})
+                    </h4>
+                    
+                    {filteredSignals.length === 0 ? (
+                      <div className="text-center py-8 bg-neutral-950/20 border border-neutral-850 rounded-xl">
+                        <p className="text-xs text-neutral-500">Aktif sinyal bulunmamaktadır.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1 scrollbar-thin">
+                        {filteredSignals.map((sig) => (
+                          <div key={sig.id} className="bg-neutral-950/50 border border-neutral-850 rounded-xl p-3 hover:border-neutral-800 transition">
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-white text-sm">{sig.symbol}</span>
+                                {getDirectionBadge(sig.direction)}
+                              </div>
+                              <span className="text-[10px] text-emerald-400 font-extrabold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                                +{sig.edge_pct ? Math.round(sig.edge_pct * 100) : 0}% Fark
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2 text-[10px] mb-2">
+                              <div>
+                                <span className="text-neutral-500">Quant Olasılık:</span>
+                                <span className="font-bold text-purple-400 ml-1">{sig.quant_probability ? Math.round(sig.quant_probability * 100) : 0}%</span>
+                              </div>
+                              <div>
+                                <span className="text-neutral-500">Polymarket Fiyat:</span>
+                                <span className="font-bold text-sky-400 ml-1">{sig.polymarket_price ? Math.round(sig.polymarket_price * 100) : 0}¢</span>
+                              </div>
+                            </div>
+                            {sig.polymarket_slug && (
+                              <a
+                                href={`https://polymarket.com/event/${sig.polymarket_slug}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-[10px] text-purple-400 hover:text-purple-300 font-semibold"
+                              >
+                                Polymarket'te Gör
+                                <ExternalLink size={10} />
+                              </a>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Right Column - Logs & History (Width: 23%) */}
+                <div className="xl:col-span-3 space-y-6">
+                  {/* Agent Logs Widget */}
+                  <div className="bg-neutral-900/40 border border-neutral-800 rounded-2xl p-5 backdrop-blur-sm relative">
+                    <h4 className="text-sm font-bold text-white mb-3 flex items-center justify-between">
+                      <span className="flex items-center gap-2">
+                        <Brain size={16} className="text-indigo-400" />
+                        Ajan Günlüğü (Canlı)
+                      </span>
+                    </h4>
+                    <div className="max-h-[300px] overflow-y-auto pr-1 space-y-2.5 scrollbar-thin text-[11px] text-neutral-300">
+                      {filteredLogs.length === 0 ? (
+                        <p className="text-xs text-neutral-500 text-center py-4">Günlük kaydı bulunmuyor.</p>
+                      ) : (
+                        filteredLogs.slice(0, 8).map((log) => (
+                          <div key={log.id} className="bg-neutral-950/40 border border-neutral-850 rounded-xl p-2.5 hover:border-neutral-800 transition">
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase ${
+                                log.log_type === 'Tuning'
+                                  ? 'bg-purple-500/10 text-purple-400'
+                                  : 'bg-emerald-500/10 text-emerald-400'
+                              }`}>
+                                {log.log_type}
+                              </span>
+                              <span className="text-[8px] text-neutral-500 font-mono">{formatDate(log.created_at)}</span>
+                            </div>
+                            <p className="font-semibold text-neutral-200 truncate text-[10px]">{log.summary}</p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* History Widget */}
+                  <div className="bg-neutral-900/40 border border-neutral-800 rounded-2xl p-5 backdrop-blur-sm relative">
+                    <h4 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
+                      <History size={16} className="text-amber-400" />
+                      Sonuçlanan İşlemler
+                    </h4>
+                    <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1 scrollbar-thin text-xs">
+                      {filteredCurrentTrades.filter(t => t.status !== 'open').length === 0 ? (
+                        <p className="text-xs text-neutral-500 text-center py-4">Sonuçlanan işlem bulunmamaktadır.</p>
+                      ) : (
+                        filteredCurrentTrades.filter(t => t.status !== 'open').slice(0, 5).map((trade, idx) => (
+                          <div key={idx} className="bg-neutral-950/40 border border-neutral-850 rounded-xl p-2.5 flex justify-between items-center hover:border-neutral-800 transition">
+                            <div>
+                              <span className="font-bold text-white block">{trade.symbol}</span>
+                              <span className={`text-[8px] font-bold uppercase ${trade.status === 'won' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {trade.status === 'won' ? 'Kazandı' : 'Kaybetti'}
+                              </span>
+                            </div>
+                            <div className="text-right">
+                              <span className={`font-mono font-bold block ${trade.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {trade.profit >= 0 ? '+' : ''}${trade.profit.toFixed(2)}
+                              </span>
+                              <span className="text-[8px] text-neutral-500 font-mono">{formatDate(trade.resolved_at || trade.created_at)}</span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Tab: Signals */}
             {activeTab === 'signals' && (
               <div className="space-y-4">
