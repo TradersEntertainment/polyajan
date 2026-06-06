@@ -445,41 +445,45 @@ function App() {
   //  DASHBOARD VIEW
   // ═══════════════════════════════════════════════════════════
 
-  const tabs: { key: TabKey; label: string; icon: React.ReactNode }[] = [
+  const tabs: { key: TabKey; label: string; icon: React.ReactNode; count?: number }[] = [
     { key: 'terminal', label: 'Terminal', icon: <LayoutGrid size={14} /> },
     { key: 'chat', label: 'AI Sohbet', icon: <MessageSquare size={14} /> },
-    { key: 'signals', label: 'Sinyaller', icon: <Zap size={14} /> },
+    { key: 'signals', label: 'Sinyaller', icon: <Zap size={14} />, count: filteredSignals.length },
     { key: 'portfolio', label: 'Portföy', icon: <Briefcase size={14} /> },
-    { key: 'tunings', label: 'Parametreler', icon: <Sliders size={14} /> },
-    { key: 'logs', label: 'Günlük', icon: <Brain size={14} /> },
+    { key: 'tunings', label: 'Parametreler', icon: <Sliders size={14} />, count: filteredTunings.length },
+    { key: 'logs', label: 'Günlük', icon: <Brain size={14} />, count: filteredLogs.length },
   ];
 
   return (
     <div className="min-h-screen bg-[var(--bg-primary)] text-neutral-100 flex flex-col font-sans">
 
       {/* ═══ PREMIUM NAVBAR ═══ */}
-      <header className="border-b border-white/[0.06] bg-[rgba(6,6,11,0.8)] backdrop-blur-xl sticky top-0 z-50 px-5 sm:px-6 py-3.5">
-        <div className="max-w-[1400px] mx-auto flex items-center justify-between gap-4">
+      <header className="navbar-glass sticky top-0 z-50 px-5 sm:px-6 py-3">
+        <div className="max-w-[1440px] mx-auto flex items-center justify-between gap-4">
           {/* Left — Logo */}
           <div className="flex items-center gap-3">
             <button
               onClick={() => setAppView('landing')}
-              className="p-2 hover:bg-white/5 rounded-xl transition-colors mr-1"
+              className="p-2 hover:bg-white/5 rounded-xl transition-colors mr-1 group"
               title="Ana Sayfa"
             >
-              <ArrowLeft size={18} className="text-neutral-400" />
+              <ArrowLeft size={18} className="text-neutral-500 group-hover:text-white transition-colors" />
             </button>
-            <div className="p-2 bg-gradient-to-tr from-purple-600 to-indigo-600 rounded-xl shadow-[0_0_20px_rgba(147,51,234,0.3)] animate-pulse-glow">
-              <Brain className="text-white" size={20} />
+            <div className="relative">
+              <div className="p-2.5 bg-gradient-to-br from-purple-600 to-indigo-600 rounded-xl animate-pulse-glow">
+                <Brain className="text-white" size={20} />
+              </div>
+              {/* Live indicator dot */}
+              <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 rounded-full border-2 border-[var(--bg-primary)] animate-pulse" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-lg font-bold tracking-tight gradient-text">Poly AI Quant Agent</h1>
-                <span className="bg-purple-500/10 text-purple-400 border border-purple-500/25 px-2 py-0.5 rounded-full text-[9px] font-semibold tracking-wider uppercase">
-                  Beta
+                <h1 className="text-[17px] font-bold tracking-tight text-white">Poly AI Quant</h1>
+                <span className="bg-gradient-to-r from-purple-500/20 to-indigo-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full text-[9px] font-semibold tracking-wider uppercase">
+                  LIVE
                 </span>
               </div>
-              <p className="text-[11px] text-neutral-500 hidden sm:block">Autonomous Polymarket Trading Engine</p>
+              <p className="text-[10px] text-neutral-500 hidden sm:block font-medium tracking-wide">Autonomous Polymarket Trading Engine</p>
             </div>
           </div>
 
@@ -489,15 +493,15 @@ function App() {
               href="https://polymarket.com/@financebot"
               target="_blank"
               rel="noopener noreferrer"
-              className="hidden md:inline-flex items-center gap-2 px-3.5 py-2 text-[13px] text-neutral-400 hover:text-white border border-white/[0.06] hover:border-white/[0.12] rounded-xl transition-all duration-200"
+              className="hidden md:inline-flex items-center gap-2 px-3.5 py-2 text-[12px] text-neutral-400 hover:text-white bg-white/[0.03] border border-white/[0.06] hover:border-purple-500/25 hover:bg-purple-500/5 rounded-xl transition-all duration-300"
             >
-              <ExternalLink size={13} className="text-purple-400" />
-              Polymarket
+              <ExternalLink size={12} className="text-purple-400" />
+              Polymarket Profili
             </a>
             <button
               onClick={fetchData}
               disabled={isLoading}
-              className="p-2.5 hover:bg-white/5 text-neutral-400 hover:text-white rounded-xl border border-white/[0.06] transition-all disabled:opacity-40"
+              className="p-2.5 hover:bg-white/5 text-neutral-500 hover:text-white rounded-xl border border-white/[0.06] transition-all disabled:opacity-30"
               title="Yenile"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
@@ -505,29 +509,32 @@ function App() {
             <button
               onClick={triggerReset}
               disabled={isLoading}
-              className="hidden sm:flex items-center gap-1.5 px-3 py-2 text-[13px] text-rose-400 hover:text-rose-300 border border-white/[0.06] hover:border-rose-500/20 rounded-xl transition-all disabled:opacity-40"
+              className="hidden sm:flex items-center gap-1.5 px-3 py-2 text-[12px] text-rose-400/80 hover:text-rose-300 bg-rose-500/5 border border-rose-500/10 hover:border-rose-500/25 rounded-xl transition-all disabled:opacity-30"
             >
-              <RefreshCw size={12} className={isLoading ? 'animate-spin' : ''} />
+              <RefreshCw size={11} className={isLoading ? 'animate-spin' : ''} />
               Sıfırla
             </button>
             <button
               onClick={triggerScan}
               disabled={isScanning}
-              className="px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl shadow-lg shadow-purple-500/10 border border-purple-500/20 font-medium transition-all duration-200 flex items-center gap-2 disabled:opacity-50 text-[13px]"
+              className="px-5 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl shadow-[0_4px_20px_rgba(139,92,246,0.25)] hover:shadow-[0_4px_28px_rgba(139,92,246,0.35)] border border-purple-500/30 font-semibold transition-all duration-300 flex items-center gap-2 disabled:opacity-50 text-[13px]"
             >
               <Zap size={14} className={isScanning ? 'animate-bounce' : ''} />
-              {isScanning ? 'Taranıyor...' : 'Tara'}
+              {isScanning ? 'Taranıyor...' : 'Hızlı Tara'}
             </button>
           </div>
         </div>
       </header>
 
       {/* ═══ MAIN CONTENT ═══ */}
-      <main className="flex-1 max-w-[1400px] w-full mx-auto px-4 sm:px-6 py-6">
+      <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-6 py-6 relative">
+        {/* Decorative background orbs */}
+        <div className="orb orb-purple w-[500px] h-[500px] -top-40 -left-60 fixed" />
+        <div className="orb orb-indigo w-[400px] h-[400px] top-1/2 -right-40 fixed" />
 
         {/* Toast */}
         {scanMessage && (
-          <div className={`mb-5 p-4 rounded-xl border text-sm flex items-center gap-3 animate-fade-in ${
+          <div className={`mb-5 p-4 rounded-xl border text-sm flex items-center gap-3 animate-fade-in backdrop-blur-sm ${
             scanMessage.startsWith('Error')
               ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
               : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
@@ -538,86 +545,115 @@ function App() {
         )}
 
         {/* ── STATUS CARDS ── */}
-        <section className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          {[
-            {
-              label: 'Aktif Sinyaller',
-              value: signals.length.toString(),
-              sub: '● Bulunan Arbitraj & Fırsat',
-              subColor: 'text-emerald-400',
-              icon: <Sparkles size={15} />,
-              iconBg: 'bg-purple-500/10 text-purple-400',
-              glow: 'bg-purple-600/5 group-hover:bg-purple-600/10',
-            },
-            {
-              label: `Net Varlık (${portfolioView === 'real' ? 'Gerçek' : 'Sanal'})`,
-              value: `$${portfolio ? formatCurrency(portfolioView === 'real' ? portfolio.real.equity : portfolio.virtual.equity) : '1,000.00'}`,
-              sub: `● Nakit: $${portfolio ? formatCurrency(portfolioView === 'real' ? portfolio.real.balance : portfolio.virtual.balance) : '1,000.00'}`,
-              subColor: 'text-indigo-400',
-              icon: <Briefcase size={15} />,
-              iconBg: 'bg-indigo-500/10 text-indigo-400',
-              glow: 'bg-indigo-600/5 group-hover:bg-indigo-600/10',
-            },
-            {
-              label: 'AI Risk Stansı',
-              value: portfolio ? portfolio.risk_profile : 'MODERATE',
-              sub: portfolio ? portfolio.risk_justification : 'Başlangıç dengeli mod.',
-              subColor: 'text-neutral-500',
-              icon: <Brain size={15} />,
-              iconBg: 'bg-emerald-500/10 text-emerald-400',
-              glow: 'bg-emerald-600/5 group-hover:bg-emerald-600/10',
-              smallValue: true,
-            },
-            {
-              label: portfolioView === 'real' ? 'Gerçek Başarı' : 'Sanal Başarı',
-              value: `%${winRate}`,
-              sub: `${currentTrades.length} İşlem / ${resolvedTrades.length} Sonuçlanan`,
-              subColor: 'text-neutral-500',
-              icon: <History size={15} />,
-              iconBg: 'bg-amber-500/10 text-amber-400',
-              glow: 'bg-amber-600/5 group-hover:bg-amber-600/10',
-            },
-          ].map((card, i) => (
-            <div key={i} className="glass-card p-4 sm:p-5 relative overflow-hidden group animate-fade-in-up" style={{ animationDelay: `${i * 0.06}s` }}>
-              <div className={`absolute top-0 right-0 w-24 h-24 rounded-full blur-2xl transition-all duration-500 ${card.glow}`} />
-              <div className="flex items-center justify-between mb-2.5">
-                <span className="text-neutral-400 text-[12px] font-medium">{card.label}</span>
-                <div className={`p-1.5 rounded-lg ${card.iconBg}`}>{card.icon}</div>
+        <section className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-7">
+          {/* Card 1: Aktif Sinyaller */}
+          <div className="stat-card purple animate-fade-in-up stagger-1 group">
+            <div className="orb orb-purple w-32 h-32 -top-10 -right-10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+            <div className="flex items-center justify-between mb-3 relative z-10">
+              <span className="text-neutral-400 text-[11px] font-medium uppercase tracking-wider">Aktif Sinyaller</span>
+              <div className="p-2 rounded-xl bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                <Sparkles size={15} />
               </div>
-              <div className={`font-extrabold text-white tracking-tight ${card.smallValue ? 'text-xl uppercase' : 'text-2xl sm:text-3xl'}`}>{card.value}</div>
-              <p className={`text-[11px] mt-1.5 flex items-center gap-1 font-medium truncate ${card.subColor}`}>
-                {card.sub}
-              </p>
             </div>
-          ))}
+            <div className="text-3xl sm:text-4xl font-black text-white tracking-tight mb-1 relative z-10">{signals.length}</div>
+            <p className="text-[11px] text-emerald-400/80 font-medium flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              Bulunan Arbitraj & Fırsat
+            </p>
+          </div>
+
+          {/* Card 2: Net Varlık */}
+          <div className="stat-card indigo animate-fade-in-up stagger-2 group">
+            <div className="orb orb-indigo w-32 h-32 -top-10 -right-10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+            <div className="flex items-center justify-between mb-3 relative z-10">
+              <span className="text-neutral-400 text-[11px] font-medium uppercase tracking-wider">Net Varlık ({portfolioView === 'real' ? 'Gerçek' : 'Sanal'})</span>
+              <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                <Briefcase size={15} />
+              </div>
+            </div>
+            <div className="text-3xl sm:text-4xl font-black text-white tracking-tight mb-1 relative z-10 font-mono">
+              ${portfolio ? formatCurrency(portfolioView === 'real' ? portfolio.real.equity : portfolio.virtual.equity) : '1,000.00'}
+            </div>
+            <p className="text-[11px] text-indigo-400/80 font-medium flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
+              Nakit: ${portfolio ? formatCurrency(portfolioView === 'real' ? portfolio.real.balance : portfolio.virtual.balance) : '1,000.00'}
+            </p>
+          </div>
+
+          {/* Card 3: AI Risk */}
+          <div className="stat-card emerald animate-fade-in-up stagger-3 group">
+            <div className="orb orb-emerald w-32 h-32 -top-10 -right-10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+            <div className="flex items-center justify-between mb-3 relative z-10">
+              <span className="text-neutral-400 text-[11px] font-medium uppercase tracking-wider">AI Risk Stansı</span>
+              <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                <Brain size={15} />
+              </div>
+            </div>
+            <div className="relative z-10">
+              <span className={`inline-block text-lg sm:text-xl font-black uppercase tracking-wider px-3 py-1 rounded-lg ${
+                portfolio?.risk_profile === 'CONSERVATIVE' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                : portfolio?.risk_profile === 'AGGRESSIVE' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+              }`}>
+                {portfolio ? portfolio.risk_profile : 'MODERATE'}
+              </span>
+            </div>
+            <p className="text-[10px] text-neutral-500 font-medium mt-2 truncate leading-relaxed">
+              {portfolio ? portfolio.risk_justification.substring(0, 60) + '...' : 'Başlangıç dengeli mod.'}
+            </p>
+          </div>
+
+          {/* Card 4: Başarı */}
+          <div className="stat-card amber animate-fade-in-up stagger-4 group">
+            <div className="flex items-center justify-between mb-3 relative z-10">
+              <span className="text-neutral-400 text-[11px] font-medium uppercase tracking-wider">{portfolioView === 'real' ? 'Gerçek' : 'Sanal'} Başarı</span>
+              <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                <History size={15} />
+              </div>
+            </div>
+            <div className="text-3xl sm:text-4xl font-black text-white tracking-tight mb-1 relative z-10">%{winRate}</div>
+            <div className="flex items-center gap-3 text-[11px]">
+              <span className="text-neutral-500 font-medium">{currentTrades.length} İşlem</span>
+              <span className="text-neutral-600">•</span>
+              <span className="text-neutral-500 font-medium">{resolvedTrades.length} Sonuçlanan</span>
+            </div>
+          </div>
         </section>
 
         {/* ── TAB CONTROLS ── */}
-        <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-4 mb-6 border-b border-white/[0.04] pb-5">
-          <div className="flex p-1 bg-[rgba(12,12,20,0.6)] border border-white/[0.06] rounded-xl overflow-x-auto">
+        <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-4 mb-6">
+          <div className="section-divider hidden sm:block w-full absolute left-0 right-0" />
+          <div className="flex p-1 bg-[rgba(10,10,18,0.7)] border border-white/[0.06] rounded-xl overflow-x-auto backdrop-blur-sm">
             {tabs.map(tab => (
               <button
                 key={tab.key}
                 onClick={() => setActiveTab(tab.key)}
-                className={`flex-1 sm:flex-none px-3.5 py-2 rounded-lg text-[13px] font-medium transition-all duration-200 flex items-center justify-center gap-2 whitespace-nowrap ${
+                className={`flex-1 sm:flex-none px-3.5 py-2 rounded-lg text-[13px] font-medium transition-all duration-250 flex items-center justify-center gap-2 whitespace-nowrap ${
                   activeTab === tab.key
-                    ? 'bg-white/[0.08] text-white shadow-sm'
-                    : 'text-neutral-500 hover:text-neutral-300'
+                    ? 'tab-active'
+                    : 'text-neutral-500 hover:text-neutral-300 hover:bg-white/[0.03]'
                 }`}
               >
                 {tab.icon}
                 {tab.label}
+                {tab.count !== undefined && tab.count > 0 && (
+                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
+                    activeTab === tab.key
+                      ? 'bg-purple-500/30 text-purple-200'
+                      : 'bg-white/[0.06] text-neutral-500'
+                  }`}>{tab.count}</span>
+                )}
               </button>
             ))}
           </div>
-          <div className="relative w-full sm:w-64">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-500 pointer-events-none" />
+          <div className="relative w-full sm:w-56">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-600 pointer-events-none" />
             <input
               type="text"
               placeholder="Ara..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              className="w-full bg-[rgba(12,12,20,0.6)] border border-white/[0.06] focus:border-purple-500/30 rounded-xl py-2 pl-9 pr-4 text-sm text-neutral-200 placeholder-neutral-600 focus:outline-none focus:ring-2 focus:ring-purple-500/15 transition"
+              className="w-full bg-[rgba(10,10,18,0.6)] border border-white/[0.06] focus:border-purple-500/25 rounded-xl py-2 pl-9 pr-4 text-sm text-neutral-200 placeholder-neutral-600 focus:outline-none focus:ring-1 focus:ring-purple-500/15 transition"
             />
           </div>
         </div>
@@ -774,7 +810,7 @@ function App() {
                               <div className="grid grid-cols-3 gap-2 text-[10px] border-b border-white/[0.04] pb-2 mb-2">
                                 <div><span className="text-neutral-500 block">Giriş:</span><span className="font-mono text-neutral-300">${trade.entry_price.toFixed(2)}</span></div>
                                 <div><span className="text-neutral-500 block">Yatırım:</span><span className="font-mono text-neutral-300">${trade.size_usd.toFixed(1)}</span></div>
-                                <div><span className="text-neutral-500 block">K/Z:</span><span className={`font-mono font-bold ${uPnL >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{uPnL >= 0 ? '+' : ''}${uPnL.toFixed(2)}</span></div>
+                                <div><span className="text-neutral-500 block">K/Z:</span><span className={`font-mono font-bold ${uPnL >= 0 ? 'profit-positive' : 'profit-negative'}`}>{uPnL >= 0 ? '+' : ''}${uPnL.toFixed(2)}</span></div>
                               </div>
                               <button onClick={() => closeTrade(trade.id, trade.symbol)} disabled={closingTradeId === trade.id} className="w-full py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-lg text-[10px] font-bold uppercase tracking-wider transition flex items-center justify-center gap-1.5 disabled:opacity-50">
                                 {closingTradeId === trade.id ? <><Loader2 size={10} className="animate-spin" /> Satılıyor...</> : <><XCircle size={10} /> Pozisyonu Kapat</>}
@@ -1220,15 +1256,16 @@ function App() {
       </main>
 
       {/* ═══ FOOTER ═══ */}
-      <footer className="mt-auto border-t border-white/[0.04] bg-[rgba(6,6,11,0.6)] py-5 text-center text-xs text-neutral-500 px-6">
-        <div className="max-w-[1400px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-          <p>© 2026 Traders Entertainment. Tüm Hakları Saklıdır.</p>
-          <div className="flex items-center gap-4 text-neutral-400">
-            <span className="flex items-center gap-1"><Database size={12} className="text-purple-400" /> SQLite</span>
-            <span>•</span>
-            <span className="flex items-center gap-1"><Brain size={12} className="text-indigo-400" /> Llama 3.3</span>
-            <span>•</span>
-            <span className="flex items-center gap-1"><Sparkles size={12} className="text-emerald-400" /> Pyth Network</span>
+      <footer className="mt-auto bg-[rgba(5,5,8,0.9)] py-5 text-center text-xs text-neutral-600 px-6 relative">
+        <div className="section-divider absolute top-0 left-0 right-0" />
+        <div className="max-w-[1440px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+          <p className="text-neutral-500">© 2026 Traders Entertainment. Tüm Hakları Saklıdır.</p>
+          <div className="flex items-center gap-4 text-neutral-500">
+            <span className="flex items-center gap-1.5"><Database size={11} className="text-purple-400/60" /> SQLite</span>
+            <span className="text-neutral-700">•</span>
+            <span className="flex items-center gap-1.5"><Brain size={11} className="text-indigo-400/60" /> Llama 3.3</span>
+            <span className="text-neutral-700">•</span>
+            <span className="flex items-center gap-1.5"><Sparkles size={11} className="text-emerald-400/60" /> Pyth Network</span>
           </div>
         </div>
       </footer>
@@ -1237,3 +1274,4 @@ function App() {
 }
 
 export default App;
+
