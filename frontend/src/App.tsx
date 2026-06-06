@@ -34,9 +34,21 @@ import type {
 
 import { formatDate, formatMarkdown, generateDiaryEntries, formatCurrency } from './utils/formatters';
 import HeroSection from './components/landing/HeroSection';
+import PolyQuantEmblem from './components/PolyQuantEmblem';
 
 // ─── API Configuration ──────────────────────────────────────────
 const API_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '';
+
+// Helper to create ChatMessage objects cleanly, avoiding purity issues in the component body
+const createChatMessage = (sender: 'user' | 'agent', text: string, error = false): ChatMessage => {
+  const prefix = error ? 'agent-err' : sender;
+  return {
+    id: `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+    sender,
+    text,
+    timestamp: new Date(),
+  };
+};
 
 // ═════════════════════════════════════════════════════════════════
 //  APP COMPONENT
@@ -52,6 +64,8 @@ function App() {
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [portfolioView, setPortfolioView] = useState<PortfolioView>('virtual');
   const [isFirstLoad, setIsFirstLoad] = useState(true);
+  const [sidebarView, setSidebarView] = useState<'chat' | 'diary'>('chat');
+  const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
 
   // ─── Data State ─────────────────────────────────────────────
   const [signals, setSignals] = useState<Signal[]>([]);
@@ -132,19 +146,24 @@ function App() {
   }, [isFirstLoad]);
 
   useEffect(() => {
-    fetchData();
+    const timer = setTimeout(() => {
+      fetchData();
+    }, 0);
     const interval = setInterval(fetchData, 60000);
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
   }, [fetchData]);
 
   // Auto-scroll chat
   useEffect(() => {
-    if (activeTab === 'chat') {
+    if (sidebarView === 'chat') {
       setTimeout(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
     }
-  }, [chatMessages, activeTab]);
+  }, [chatMessages, sidebarView, isMobileChatOpen]);
 
   // ═══════════════════════════════════════════════════════════
   //  ACTIONS
@@ -178,12 +197,7 @@ function App() {
 
   const sendChatMessage = async (msgText: string) => {
     if (!msgText.trim() || isSendingMessage) return;
-    const userMsg: ChatMessage = {
-      id: `user-${Date.now()}`,
-      sender: 'user',
-      text: msgText,
-      timestamp: new Date(),
-    };
+    const userMsg = createChatMessage('user', msgText);
     setChatMessages(prev => [...prev, userMsg]);
     setCurrentMessage('');
     setIsSendingMessage(true);
@@ -195,27 +209,12 @@ function App() {
       });
       const data = await res.json();
       if (res.ok) {
-        setChatMessages(prev => [...prev, {
-          id: `agent-${Date.now()}`,
-          sender: 'agent',
-          text: data.response || 'Bir hata oluştu veya boş bir yanıt döndü.',
-          timestamp: new Date(),
-        }]);
+        setChatMessages(prev => [...prev, createChatMessage('agent', data.response || 'Bir hata oluştu veya boş bir yanıt döndü.')]);
       } else {
-        setChatMessages(prev => [...prev, {
-          id: `agent-err-${Date.now()}`,
-          sender: 'agent',
-          text: `Hata: ${data.detail || 'Sohbet sunucusundan hata döndü.'}`,
-          timestamp: new Date(),
-        }]);
+        setChatMessages(prev => [...prev, createChatMessage('agent', `Hata: ${data.detail || 'Sohbet sunucusundan hata döndü.'}`, true)]);
       }
     } catch {
-      setChatMessages(prev => [...prev, {
-        id: `agent-err-${Date.now()}`,
-        sender: 'agent',
-        text: 'Sunucuya bağlanılamadı. Lütfen backend servisinizin çalıştığından emin olun.',
-        timestamp: new Date(),
-      }]);
+      setChatMessages(prev => [...prev, createChatMessage('agent', 'Sunucuya bağlanılamadı. Lütfen backend servisinizin çalıştığından emin olun.', true)]);
     } finally {
       setIsSendingMessage(false);
     }
@@ -447,15 +446,148 @@ function App() {
 
   const tabs: { key: TabKey; label: string; icon: React.ReactNode; count?: number }[] = [
     { key: 'terminal', label: 'Terminal', icon: <LayoutGrid size={14} /> },
-    { key: 'chat', label: 'AI Sohbet', icon: <MessageSquare size={14} /> },
     { key: 'signals', label: 'Sinyaller', icon: <Zap size={14} />, count: filteredSignals.length },
     { key: 'portfolio', label: 'Portföy', icon: <Briefcase size={14} /> },
     { key: 'tunings', label: 'Parametreler', icon: <Sliders size={14} />, count: filteredTunings.length },
     { key: 'logs', label: 'Günlük', icon: <Brain size={14} />, count: filteredLogs.length },
   ];
 
+  const renderPersistentChatPanel = (isMobile = false) => {
+    const heightClass = isMobile ? "h-[calc(100vh-80px)]" : "h-[650px] xl:h-[700px]";
+    const paddingClass = isMobile ? "p-1" : "p-5";
+    const borderClass = isMobile ? "" : "glass-card";
+
+    return (
+      <div className={`flex flex-col ${borderClass} ${paddingClass} ${heightClass} text-left relative overflow-hidden`}>
+        {/* Sidebar Tabs */}
+        <div className="flex items-center justify-between mb-4 border-b border-white/[0.04] pb-3 shrink-0">
+          <div className="flex p-0.5 bg-[rgba(6,6,11,0.6)] border border-white/[0.06] rounded-lg">
+            <button
+              onClick={() => setSidebarView('chat')}
+              className={`px-3 py-1.5 rounded-md text-[11px] font-bold uppercase transition flex items-center gap-1.5 ${
+                sidebarView === 'chat'
+                  ? 'bg-purple-600 text-white shadow-sm'
+                  : 'text-neutral-500 hover:text-neutral-300'
+              }`}
+            >
+              <MessageSquare size={12} />
+              AI Sohbet
+            </button>
+            <button
+              onClick={() => setSidebarView('diary')}
+              className={`px-3 py-1.5 rounded-md text-[11px] font-bold uppercase transition flex items-center gap-1.5 ${
+                sidebarView === 'diary'
+                  ? 'bg-purple-600 text-white shadow-sm'
+                  : 'text-neutral-500 hover:text-neutral-300'
+              }`}
+            >
+              <BookOpen size={12} />
+              Ajan Günlüğü
+            </button>
+          </div>
+          {sidebarView === 'chat' ? (
+            <span className="bg-purple-500/10 text-purple-400 border border-purple-500/25 px-2 py-0.5 rounded-full text-[8px] sm:text-[9px] font-semibold uppercase tracking-wider">
+              Groq Llama 3.3
+            </span>
+          ) : (
+            <span className="text-[9px] text-neutral-500 font-mono flex items-center gap-1.5">
+              <Activity size={10} className="text-emerald-400 animate-pulse" />
+              Canlı
+            </span>
+          )}
+        </div>
+
+        {/* View 1: AI Chat */}
+        {sidebarView === 'chat' ? (
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+            <div className="flex-1 overflow-y-auto pr-1 mb-4 space-y-4 scroll-smooth min-h-0">
+              {chatMessages.map(msg => {
+                const isAgent = msg.sender === 'agent';
+                return (
+                  <div key={msg.id} className={`flex items-start gap-2 max-w-[90%] ${isAgent ? 'mr-auto' : 'ml-auto flex-row-reverse text-right'}`}>
+                    <div className={`p-1.5 rounded-lg border shrink-0 ${isAgent ? 'bg-purple-500/10 text-purple-400 border-purple-500/25' : 'bg-white/5 text-neutral-300 border-white/[0.06]'}`}>
+                      {isAgent ? <Brain size={13} /> : <User size={13} />}
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <div className={`px-3 py-2 rounded-xl text-xs leading-relaxed border ${isAgent ? 'bg-[rgba(6,6,11,0.5)] text-neutral-200 border-white/[0.04] rounded-tl-none' : 'bg-purple-600/90 text-white border-purple-500/25 rounded-tr-none shadow-[0_0_15px_rgba(139,92,246,0.1)]'}`}>
+                        {isAgent ? <div className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: formatMarkdown(msg.text) }} /> : <span className="whitespace-pre-wrap">{msg.text}</span>}
+                      </div>
+                      <span className="text-[8px] text-neutral-500 font-mono mt-0.5 px-1">{msg.timestamp.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}</span>
+                    </div>
+                  </div>
+                );
+              })}
+              {isSendingMessage && (
+                <div className="flex items-start gap-2 mr-auto max-w-[90%]">
+                  <div className="p-1.5 rounded-lg border bg-purple-500/10 text-purple-400 border-purple-500/25 shrink-0"><Brain size={13} className="animate-spin" /></div>
+                  <div className="px-3 py-2.5 bg-[rgba(6,6,11,0.5)] border border-white/[0.04] text-neutral-400 rounded-xl rounded-tl-none flex items-center gap-1 text-xs">
+                    <span>Ajan düşünüyor</span>
+                    <span className="flex gap-0.5 items-center mt-1">
+                      <span className="w-1 h-1 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-1 h-1 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="w-1 h-1 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </span>
+                  </div>
+                </div>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+            
+            {/* Quick Suggestions */}
+            <div className="flex flex-wrap gap-1 mb-3 shrink-0">
+              {[
+                { label: 'Ne yapıyorsun?', q: 'Şu an ne yapıyorsun? Hangi piyasaları izliyorsun?' },
+                { label: 'Son işlemler', q: 'Son 15 işlemde ne yaptın? Detaylarını açıklar mısın?' },
+                { label: 'Piyasa tara', q: 'Şu anki piyasa durumunu tara, arbitrage oranlarını anlat.' },
+              ].map((chip, i) => (
+                <button key={i} onClick={() => sendChatMessage(chip.q)} disabled={isSendingMessage} className="px-2 py-1 bg-[rgba(6,6,11,0.5)] border border-white/[0.06] hover:border-purple-500/30 text-[10px] text-neutral-400 hover:text-purple-300 rounded-lg transition disabled:opacity-50">{chip.label}</button>
+              ))}
+            </div>
+
+            {/* Input Form */}
+            <form onSubmit={e => { e.preventDefault(); sendChatMessage(currentMessage); }} className="flex gap-2 shrink-0">
+              <input type="text" placeholder="Ajana bir soru sor..." value={currentMessage} onChange={e => setCurrentMessage(e.target.value)} disabled={isSendingMessage} className="flex-1 bg-[rgba(6,6,11,0.6)] border border-white/[0.06] focus:border-white/[0.12] rounded-xl py-2 px-3 text-xs text-neutral-200 placeholder-neutral-600 focus:outline-none focus:ring-2 focus:ring-purple-500/15 transition disabled:opacity-70" />
+              <button type="submit" disabled={!currentMessage.trim() || isSendingMessage} className="px-3 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl font-semibold shadow-lg border border-purple-500/20 transition flex items-center justify-center disabled:opacity-50"><Send size={12} /></button>
+            </form>
+          </div>
+        ) : (
+          /* View 2: Narrative Diary */
+          <div className="flex-1 overflow-y-auto pr-1 space-y-3 min-h-0">
+            {generateDiaryEntries(virtualTrades, logs).length === 0 ? (
+              <div className="text-center py-10 bg-[rgba(6,6,11,0.3)] border border-white/[0.04] rounded-xl">
+                <p className="text-xs text-neutral-500">Günlük kaydı bulunmuyor.</p>
+              </div>
+            ) : generateDiaryEntries(virtualTrades, logs).map(entry => {
+              const styles: Record<string, string> = {
+                'trade-open': 'bg-purple-500/10 text-purple-400 border-purple-500/20',
+                'trade-won': 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+                'trade-lost': 'bg-rose-500/10 text-rose-400 border-rose-500/20',
+                'log-tuning': 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+                'log-decision': 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+              };
+              const badgeStyle = styles[entry.type] || 'bg-neutral-800 text-neutral-400 border-neutral-700';
+              const typeLabel = entry.type.replace('trade-', 'Poz ').replace('log-', 'Ajan ').replace('-open', ' Açılış').replace('-won', ' Kazanç').replace('-lost', ' Kayıp').replace('-tuning', ' Opt.').replace('-decision', ' Karar').replace('-info', ' Bilgi');
+              return (
+                <div key={entry.id} className="glass-card-sm p-3 flex flex-col gap-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wide border ${badgeStyle}`}>{typeLabel}</span>
+                    <span className="text-[8px] text-neutral-500 font-mono">{formatDate(entry.rawDate)}</span>
+                  </div>
+                  <div>
+                    <h5 className="font-bold text-white text-[11px] mb-0.5 leading-snug">{entry.title}</h5>
+                    <p className="text-neutral-400 text-[10px] leading-relaxed whitespace-pre-wrap">{entry.content}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
-    <div className="min-h-screen bg-[var(--bg-primary)] text-neutral-100 flex flex-col font-sans">
+    <div className="min-h-screen bg-[var(--bg-primary)] text-neutral-100 flex flex-col font-sans relative">
 
       {/* ═══ PREMIUM NAVBAR ═══ */}
       <header className="navbar-glass sticky top-0 z-50 px-5 sm:px-6 py-3">
@@ -469,13 +601,7 @@ function App() {
             >
               <ArrowLeft size={18} className="text-neutral-500 group-hover:text-white transition-colors" />
             </button>
-            <div className="relative">
-              <div className="p-2.5 bg-gradient-to-br from-purple-600 to-indigo-600 rounded-xl animate-pulse-glow">
-                <Brain className="text-white" size={20} />
-              </div>
-              {/* Live indicator dot */}
-              <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 rounded-full border-2 border-[var(--bg-primary)] animate-pulse" />
-            </div>
+            <PolyQuantEmblem size={38} hasLiveDot={true} />
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-[17px] font-bold tracking-tight text-white">Poly AI Quant</h1>
@@ -665,7 +791,9 @@ function App() {
             <p className="text-neutral-400">Veriler yükleniyor...</p>
           </div>
         ) : (
-          <>
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            {/* Left Area: Main Workspace (8 columns on lg) */}
+            <div className="lg:col-span-8 space-y-6">
             {/* ═══════════════════════════════════════════════════
                 TAB: TERMINAL
             ═══════════════════════════════════════════════════ */}
@@ -1155,105 +1283,51 @@ function App() {
                 </div>
               </div>
             )}
+            </div>
 
-            {/* ═══════════════════════════════════════════════════
-                TAB: CHAT & DIARY
-            ═══════════════════════════════════════════════════ */}
-            {activeTab === 'chat' && (
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch animate-fade-in text-left">
-                {/* Chat Interface */}
-                <div className="lg:col-span-8 flex flex-col glass-card p-5 h-[650px]">
-                  <div className="flex items-center justify-between mb-4 border-b border-white/[0.04] pb-3">
-                    <h4 className="text-sm font-bold text-white flex items-center gap-2"><Brain size={18} className="text-purple-400 animate-pulse" /> Ajan AI Sohbet</h4>
-                    <span className="bg-purple-500/10 text-purple-400 border border-purple-500/25 px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase">Groq Llama 3.3</span>
-                  </div>
-                  <div className="flex-1 overflow-y-auto pr-1 mb-4 space-y-4 scroll-smooth">
-                    {chatMessages.map(msg => {
-                      const isAgent = msg.sender === 'agent';
-                      return (
-                        <div key={msg.id} className={`flex items-start gap-3 max-w-[85%] ${isAgent ? 'mr-auto' : 'ml-auto flex-row-reverse text-right'}`}>
-                          <div className={`p-2 rounded-xl border shrink-0 ${isAgent ? 'bg-purple-500/10 text-purple-400 border-purple-500/25' : 'bg-white/5 text-neutral-300 border-white/[0.06]'}`}>
-                            {isAgent ? <Brain size={16} /> : <User size={16} />}
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <div className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed border ${isAgent ? 'bg-[rgba(6,6,11,0.5)] text-neutral-200 border-white/[0.04] rounded-tl-none' : 'bg-purple-600/90 text-white border-purple-500/25 rounded-tr-none shadow-[0_0_15px_rgba(139,92,246,0.1)]'}`}>
-                              {isAgent ? <div className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: formatMarkdown(msg.text) }} /> : <span className="whitespace-pre-wrap">{msg.text}</span>}
-                            </div>
-                            <span className="text-[9px] text-neutral-500 font-mono mt-0.5 px-1">{msg.timestamp.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}</span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {isSendingMessage && (
-                      <div className="flex items-start gap-3 mr-auto max-w-[85%]">
-                        <div className="p-2 rounded-xl border bg-purple-500/10 text-purple-400 border-purple-500/25 shrink-0"><Brain size={16} className="animate-spin" /></div>
-                        <div className="px-4 py-3 bg-[rgba(6,6,11,0.5)] border border-white/[0.04] text-neutral-400 rounded-2xl rounded-tl-none flex items-center gap-1.5 text-xs">
-                          <span>Ajan düşünüyor</span>
-                          <span className="flex gap-0.5 items-center mt-1">
-                            <span className="w-1 h-1 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-                            <span className="w-1 h-1 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-                            <span className="w-1 h-1 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-                          </span>
-                        </div>
-                      </div>
-                    )}
-                    <div ref={messagesEndRef} />
-                  </div>
-                  <div className="flex flex-wrap gap-2 mb-3 mt-1 border-t border-white/[0.04] pt-3">
-                    {[
-                      { label: 'Şu an ne yapıyorsun?', q: 'Şu an ne yapıyorsun? Hangi piyasaları izliyorsun?' },
-                      { label: 'Son işlemlerini anlat', q: 'Son 15 işlemde ne yaptın? Detaylarını açıklar mısın?' },
-                      { label: 'Neden Altın aldın?', q: 'Portföyündeki XAU alımının sebebi nedir?' },
-                      { label: 'Piyasa tara', q: 'Şu anki piyasa durumunu tara, arbitrage oranlarını anlat.' },
-                    ].map((chip, i) => (
-                      <button key={i} onClick={() => sendChatMessage(chip.q)} disabled={isSendingMessage} className="px-3 py-1.5 bg-[rgba(6,6,11,0.5)] border border-white/[0.06] hover:border-purple-500/30 text-[11px] text-neutral-400 hover:text-purple-300 rounded-lg transition disabled:opacity-50">{chip.label}</button>
-                    ))}
-                  </div>
-                  <form onSubmit={e => { e.preventDefault(); sendChatMessage(currentMessage); }} className="flex gap-3 mt-auto">
-                    <input type="text" placeholder="Ajana bir soru sor..." value={currentMessage} onChange={e => setCurrentMessage(e.target.value)} disabled={isSendingMessage} className="flex-1 bg-[rgba(6,6,11,0.6)] border border-white/[0.06] focus:border-white/[0.12] rounded-xl py-3 px-4 text-sm text-neutral-200 placeholder-neutral-600 focus:outline-none focus:ring-2 focus:ring-purple-500/15 transition disabled:opacity-70" />
-                    <button type="submit" disabled={!currentMessage.trim() || isSendingMessage} className="px-4 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl font-semibold shadow-lg border border-purple-500/20 transition flex items-center gap-1.5 disabled:opacity-50"><Send size={15} /></button>
-                  </form>
-                </div>
-
-                {/* Narrative Diary */}
-                <div className="lg:col-span-4 flex flex-col glass-card p-5 h-[650px]">
-                  <div className="flex items-center justify-between mb-4 border-b border-white/[0.04] pb-3">
-                    <h4 className="text-sm font-bold text-white flex items-center gap-2"><BookOpen size={16} className="text-indigo-400" /> Ajanın Günlüğü</h4>
-                    <span className="text-[10px] text-neutral-500 font-mono flex items-center gap-1"><Activity size={10} className="text-emerald-400" /> Canlı</span>
-                  </div>
-                  <div className="flex-1 overflow-y-auto pr-1 space-y-3">
-                    {generateDiaryEntries(virtualTrades, logs).length === 0 ? (
-                      <div className="text-center py-10 bg-[rgba(6,6,11,0.3)] border border-white/[0.04] rounded-xl"><p className="text-xs text-neutral-500">Günlük kaydı bulunmuyor.</p></div>
-                    ) : generateDiaryEntries(virtualTrades, logs).map(entry => {
-                      const styles: Record<string, string> = {
-                        'trade-open': 'bg-purple-500/10 text-purple-400 border-purple-500/20',
-                        'trade-won': 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-                        'trade-lost': 'bg-rose-500/10 text-rose-400 border-rose-500/20',
-                        'log-tuning': 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-                        'log-decision': 'bg-amber-500/10 text-amber-400 border-amber-500/20',
-                      };
-                      const badgeStyle = styles[entry.type] || 'bg-neutral-800 text-neutral-400 border-neutral-700';
-                      const typeLabel = entry.type.replace('trade-', 'Poz ').replace('log-', 'Ajan ').replace('-open', ' Açılış').replace('-won', ' Kazanç').replace('-lost', ' Kayıp').replace('-tuning', ' Opt.').replace('-decision', ' Karar').replace('-info', ' Bilgi');
-                      return (
-                        <div key={entry.id} className="glass-card-sm p-3.5 flex flex-col gap-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide border ${badgeStyle}`}>{typeLabel}</span>
-                            <span className="text-[9px] text-neutral-500 font-mono">{formatDate(entry.rawDate)}</span>
-                          </div>
-                          <div>
-                            <h5 className="font-bold text-white text-xs mb-1 leading-snug">{entry.title}</h5>
-                            <p className="text-neutral-400 text-[11px] leading-relaxed whitespace-pre-wrap">{entry.content}</p>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            )}
-          </>
+            {/* Right Area: Persistent AI Side Panel (4 columns on lg) */}
+            <div className="hidden lg:block lg:col-span-4 sticky top-24 self-start">
+              {renderPersistentChatPanel()}
+            </div>
+          </div>
         )}
       </main>
+
+      {/* Mobile Floating Chat FAB (only visible on mobile/tablet) */}
+      <div className="lg:hidden fixed bottom-6 right-6 z-40">
+        <button
+          onClick={() => setIsMobileChatOpen(true)}
+          className="p-4 bg-gradient-to-tr from-purple-600 to-indigo-600 text-white rounded-full shadow-[0_0_20px_rgba(139,92,246,0.5)] border border-purple-500/30 hover:scale-105 transition-transform animate-pulse-glow"
+          aria-label="AI Sohbet Panelini Aç"
+        >
+          <MessageSquare size={22} />
+        </button>
+      </div>
+
+      {/* Mobile Drawer Overlay */}
+      {isMobileChatOpen && (
+        <div className="lg:hidden fixed inset-0 z-50 flex justify-end">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setIsMobileChatOpen(false)}
+          />
+          {/* Drawer Content */}
+          <div className="relative w-full max-w-[420px] h-full bg-[var(--bg-secondary)] border-l border-white/[0.08] p-5 shadow-[0_0_50px_rgba(0,0,0,0.8)] animate-slide-in-right flex flex-col justify-between">
+            <div className="absolute top-4 right-4 z-10">
+              <button
+                onClick={() => setIsMobileChatOpen(false)}
+                className="p-2 hover:bg-white/5 rounded-xl text-neutral-400 hover:text-white transition"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+            <div className="flex-1 flex flex-col h-full overflow-hidden mt-8">
+              {renderPersistentChatPanel(true)}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ═══ FOOTER ═══ */}
       <footer className="mt-auto bg-[rgba(5,5,8,0.9)] py-5 text-center text-xs text-neutral-600 px-6 relative">

@@ -224,6 +224,12 @@ body {
 }
 .animate-slide-in-left { animation: slideInLeft 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
 
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(100%); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.animate-slide-in-right { animation: slideInRight 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
 @keyframes cursorBlink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }

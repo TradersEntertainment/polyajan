@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback } from 'react';
 
 export function useTypewriter(text: string, speed = 35, startDelay = 600) {
   const [displayed, setDisplayed] = useState('');
-  const [done, setDone] = useState(false);
   const [started, setStarted] = useState(false);
+
+  const done = started && displayed.length >= text.length;
 
   useEffect(() => {
     const delayTimer = setTimeout(() => setStarted(true), startDelay);
@@ -13,7 +14,6 @@ export function useTypewriter(text: string, speed = 35, startDelay = 600) {
   useEffect(() => {
     if (!started) return;
     if (displayed.length >= text.length) {
-      setDone(true);
       return;
     }
     const timer = setTimeout(() => {
@@ -24,7 +24,6 @@ export function useTypewriter(text: string, speed = 35, startDelay = 600) {
 
   const reset = useCallback(() => {
     setDisplayed('');
-    setDone(false);
     setStarted(false);
   }, []);
 

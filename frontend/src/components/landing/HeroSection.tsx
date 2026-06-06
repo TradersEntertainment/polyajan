@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTypewriter } from '../../hooks/useTypewriter';
 import ParticleBackground from './ParticleBackground';
+import PolyQuantEmblem from '../PolyQuantEmblem';
 import {
   Brain,
   TrendingUp,
@@ -51,9 +52,7 @@ export default function HeroSection({ onEnterDashboard, stats }: HeroSectionProp
       {/* Floating Navbar */}
       <nav className="relative z-10 w-full px-5 sm:px-8 py-5 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="p-2 bg-gradient-to-tr from-purple-600 to-indigo-600 rounded-xl animate-pulse-glow">
-            <Brain className="text-white" size={22} />
-          </div>
+          <PolyQuantEmblem size={40} hasLiveDot={true} />
           <span className="text-[21px] font-extrabold tracking-tight text-white" style={{ fontFamily: 'var(--font-heading)' }}>
             Poly AI Quant<sup className="text-[10px] text-purple-400 ml-0.5">®</sup>
           </span>
