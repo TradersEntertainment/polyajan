@@ -120,12 +120,28 @@ function App() {
   const [closingTradeId, setClosingTradeId] = useState<number | null>(null);
   const [closeResult, setCloseResult] = useState<string | null>(null);
 
+  // Trading Restrictions states
+  const [restrictions, setRestrictions] = useState<{
+    block_stocks_down: boolean;
+    block_commodities_down: boolean;
+    trading_ban_enabled: boolean;
+    trading_ban_start: string;
+    trading_ban_end: string;
+  }>({
+    block_stocks_down: false,
+    block_commodities_down: false,
+    trading_ban_enabled: false,
+    trading_ban_start: '22:00',
+    trading_ban_end: '08:00'
+  });
+  const [isSavingRestrictions, setIsSavingRestrictions] = useState(false);
+
   // Chat integration states
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
       sender: 'agent',
-      text: 'Merhaba! Ben Poly AI Quant Algoritman. Polymarket üzerindeki aktif pozisyonları, fırsat sinyallerini ve optimizasyon kararlarını takip ediyorum. Bana ne yaptığım veya kararlarım hakkında sorular sorabilirsin!',
+      text: 'Merhaba! Ben Poly AI Quant Algoritman. Polymarket üzerindeki aktif pozisyonları, fırsat sinyallerini ve kısıtlama kararlarını takip ediyorum. Bana risk seviyeni güncelleyebilir, DOWN bahislerine kısıtlama getirmek istediğini söyleyebilir ya da belirli saatler için işlem yasağı koyabilirsin!',
       timestamp: new Date()
     }
   ]);
@@ -133,17 +149,46 @@ function App() {
   const [isSendingMessage, setIsSendingMessage] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const saveRestrictions = async (updatedRestrictions = restrictions) => {
+    setIsSavingRestrictions(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/restrictions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(updatedRestrictions)
+      });
+      if (res.ok) {
+        setRestrictions(updatedRestrictions);
+        fetchData();
+      }
+    } catch (err) {
+      console.error("Error saving restrictions:", err);
+    } finally {
+      setIsSavingRestrictions(false);
+    }
+  };
+
+  const toggleRestriction = (key: keyof typeof restrictions) => {
+    const newVal = !restrictions[key];
+    const updated = { ...restrictions, [key]: newVal };
+    setRestrictions(updated);
+    saveRestrictions(updated);
+  };
+
   // Fetch all data
   const fetchData = async () => {
     setIsLoading(true);
     try {
-      const [signalsRes, tuningsRes, logsRes, portfolioRes, tradesRes, historyRes] = await Promise.all([
+      const [signalsRes, tuningsRes, logsRes, portfolioRes, tradesRes, historyRes, restrictionsRes] = await Promise.all([
         fetch(`${API_BASE}/api/signals`),
         fetch(`${API_BASE}/api/tunings`),
         fetch(`${API_BASE}/api/logs`),
         fetch(`${API_BASE}/api/portfolio`),
         fetch(`${API_BASE}/api/trades/virtual`),
-        fetch(`${API_BASE}/api/portfolio/history`)
+        fetch(`${API_BASE}/api/portfolio/history`),
+        fetch(`${API_BASE}/api/restrictions`).catch(() => null)
       ]);
 
       if (signalsRes.ok) setSignals(await signalsRes.json());
@@ -159,6 +204,9 @@ function App() {
       }
       if (tradesRes.ok) setVirtualTrades(await tradesRes.json());
       if (historyRes.ok) setPortfolioHistory(await historyRes.json());
+      if (restrictionsRes && restrictionsRes.ok) {
+        setRestrictions(await restrictionsRes.json());
+      }
     } catch (error) {
       console.error("Error fetching data from backend API:", error);
     } finally {
@@ -886,6 +934,107 @@ function App() {
                           </div>
                         </div>
                       ))}
+                    </div>
+                  </div>
+
+                  {/* Trading Restrictions Card */}
+                  <div className="bg-neutral-900/40 border border-neutral-800 rounded-2xl p-5 backdrop-blur-sm relative overflow-hidden">
+                    <h4 className="text-sm font-bold text-white mb-4 flex items-center justify-between">
+                      <span className="flex items-center gap-2">
+                        <Sliders size={16} className="text-rose-400" />
+                        İşlem Kısıtlamaları (Hassas Ayarlar)
+                      </span>
+                      {isSavingRestrictions && (
+                        <Loader2 size={12} className="animate-spin text-purple-400" />
+                      )}
+                    </h4>
+                    
+                    <div className="space-y-4 text-xs">
+                      {/* Checkbox 1: Block Stocks Down */}
+                      <div className="flex items-center justify-between bg-neutral-950/40 border border-neutral-850 p-3 rounded-xl hover:border-neutral-800 transition">
+                        <div className="pr-2">
+                          <span className="font-bold text-white block">Hisselerde DOWN Engelle</span>
+                          <span className="text-[10px] text-neutral-500 block mt-0.5">S&P 500 ve diğer hisselerde düşüş bahislerini engeller.</span>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                          <input 
+                            type="checkbox" 
+                            checked={restrictions.block_stocks_down} 
+                            onChange={() => toggleRestriction('block_stocks_down')}
+                            className="sr-only peer" 
+                          />
+                          <div className="w-9 h-5 bg-neutral-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-neutral-400 after:border-neutral-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-650 peer-checked:after:bg-white"></div>
+                        </label>
+                      </div>
+
+                      {/* Checkbox 2: Block Commodities Down */}
+                      <div className="flex items-center justify-between bg-neutral-950/40 border border-neutral-850 p-3 rounded-xl hover:border-neutral-800 transition">
+                        <div className="pr-2">
+                          <span className="font-bold text-white block">Emtialarda DOWN Engelle</span>
+                          <span className="text-[10px] text-neutral-500 block mt-0.5">Petrol, Altın ve Gümüş düşüş bahislerini engeller.</span>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                          <input 
+                            type="checkbox" 
+                            checked={restrictions.block_commodities_down} 
+                            onChange={() => toggleRestriction('block_commodities_down')}
+                            className="sr-only peer" 
+                          />
+                          <div className="w-9 h-5 bg-neutral-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-neutral-400 after:border-neutral-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-650 peer-checked:after:bg-white"></div>
+                        </label>
+                      </div>
+
+                      {/* Checkbox 3: Trading Ban Enabled */}
+                      <div className="flex flex-col bg-neutral-950/40 border border-neutral-850 p-3 rounded-xl hover:border-neutral-800 transition space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="pr-2">
+                            <span className="font-bold text-white block">Belirli Saatlerde İşlem Yasağı</span>
+                            <span className="text-[10px] text-neutral-500 block mt-0.5">Aşağıda belirlenen saat aralığında işlem açılmasını durdurur.</span>
+                          </div>
+                          <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                            <input 
+                              type="checkbox" 
+                              checked={restrictions.trading_ban_enabled} 
+                              onChange={() => toggleRestriction('trading_ban_enabled')}
+                              className="sr-only peer" 
+                            />
+                            <div className="w-9 h-5 bg-neutral-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-neutral-400 after:border-neutral-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-650 peer-checked:after:bg-white"></div>
+                          </label>
+                        </div>
+                        
+                        {restrictions.trading_ban_enabled && (
+                          <div className="flex items-center gap-3 pt-2 border-t border-neutral-850/60">
+                            <div className="flex-1">
+                              <label className="text-[10px] text-neutral-500 block mb-1">Başlangıç (TRT)</label>
+                              <input 
+                                type="text" 
+                                placeholder="Örn: 22:00" 
+                                value={restrictions.trading_ban_start}
+                                onChange={(e) => setRestrictions({ ...restrictions, trading_ban_start: e.target.value })}
+                                className="w-full bg-neutral-900 border border-neutral-800 rounded-lg p-2 text-center text-white focus:outline-none focus:border-purple-600 font-mono text-xs"
+                              />
+                            </div>
+                            <div className="flex-1">
+                              <label className="text-[10px] text-neutral-500 block mb-1">Bitiş (TRT)</label>
+                              <input 
+                                type="text" 
+                                placeholder="Örn: 08:00" 
+                                value={restrictions.trading_ban_end}
+                                onChange={(e) => setRestrictions({ ...restrictions, trading_ban_end: e.target.value })}
+                                className="w-full bg-neutral-900 border border-neutral-800 rounded-lg p-2 text-center text-white focus:outline-none focus:border-purple-600 font-mono text-xs"
+                              />
+                            </div>
+                            <div className="self-end pb-0.5">
+                              <button 
+                                onClick={() => saveRestrictions()}
+                                className="px-3 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold transition duration-200 text-xs"
+                              >
+                                Kaydet
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>

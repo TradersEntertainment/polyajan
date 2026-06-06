@@ -65,6 +65,58 @@ async def get_tunings():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/restrictions")
+async def get_restrictions():
+    try:
+        block_stocks_down = await database.get_setting("block_stocks_down") == "true"
+        block_commodities_down = await database.get_setting("block_commodities_down") == "true"
+        trading_ban_enabled = await database.get_setting("trading_ban_enabled") == "true"
+        trading_ban_start = await database.get_setting("trading_ban_start") or "22:00"
+        trading_ban_end = await database.get_setting("trading_ban_end") or "08:00"
+        
+        return {
+            "block_stocks_down": block_stocks_down,
+            "block_commodities_down": block_commodities_down,
+            "trading_ban_enabled": trading_ban_enabled,
+            "trading_ban_start": trading_ban_start,
+            "trading_ban_end": trading_ban_end
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/restrictions")
+async def update_restrictions(payload: dict):
+    try:
+        block_stocks_down = payload.get("block_stocks_down")
+        block_commodities_down = payload.get("block_commodities_down")
+        trading_ban_enabled = payload.get("trading_ban_enabled")
+        trading_ban_start = payload.get("trading_ban_start")
+        trading_ban_end = payload.get("trading_ban_end")
+        
+        updates = []
+        if block_stocks_down is not None:
+            await database.update_setting("block_stocks_down", "true" if block_stocks_down else "false")
+            updates.append(f"block_stocks_down={block_stocks_down}")
+        if block_commodities_down is not None:
+            await database.update_setting("block_commodities_down", "true" if block_commodities_down else "false")
+            updates.append(f"block_commodities_down={block_commodities_down}")
+        if trading_ban_enabled is not None:
+            await database.update_setting("trading_ban_enabled", "true" if trading_ban_enabled else "false")
+            updates.append(f"trading_ban_enabled={trading_ban_enabled}")
+        if trading_ban_start is not None:
+            await database.update_setting("trading_ban_start", trading_ban_start)
+            updates.append(f"trading_ban_start={trading_ban_start}")
+        if trading_ban_end is not None:
+            await database.update_setting("trading_ban_end", trading_ban_end)
+            updates.append(f"trading_ban_end={trading_ban_end}")
+            
+        desc = ", ".join(updates)
+        await database.add_agent_log("Tuning", "İşlem kısıtlamaları panelden güncellendi", desc)
+        
+        return {"message": "Kısıtlamalar başarıyla güncellendi.", "updates": payload}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/scan-now")
 async def run_scan_now():
     try:
@@ -576,10 +628,16 @@ async def chat_with_agent(payload: dict):
             "- 'change_risk': The user wants to change/update the risk profile or risk mode. "
             "Extract the target profile, which MUST be one of: 'CONSERVATIVE', 'MODERATE', 'AGGRESSIVE'.\n"
             "- 'run_scan': The user wants to trigger a market scan, scanner cycle, or scan the assets.\n"
+            "- 'update_restrictions': The user wants to update/change trading restrictions or rules (e.g. block DOWN trades on stocks, block DOWN trades on commodities/metals/petrol, set trading ban hours or toggle trading ban).\n"
             "- 'chat': None of the above; this is a standard question or discussion.\n\n"
             "Respond ONLY with a raw JSON object containing these keys:\n"
-            "- 'action': The action name ('change_risk', 'run_scan', or 'chat').\n"
+            "- 'action': The action name ('change_risk', 'run_scan', 'update_restrictions', or 'chat').\n"
             "- 'profile': The extracted risk profile ('CONSERVATIVE', 'MODERATE', 'AGGRESSIVE', or null).\n"
+            "- 'block_stocks_down': boolean or null (true to disable DOWN trades on stocks, false to enable, null if unchanged).\n"
+            "- 'block_commodities_down': boolean or null (true to disable DOWN trades on commodities, false to enable, null if unchanged).\n"
+            "- 'trading_ban_enabled': boolean or null (true to enable trading ban at certain hours, false to disable, null if unchanged).\n"
+            "- 'trading_ban_start': string 'HH:MM' or null (trading ban start hour TRT, e.g. '22:00').\n"
+            "- 'trading_ban_end': string 'HH:MM' or null (trading ban end hour TRT, e.g. '08:00').\n"
             "- 'justification': A brief justification in Turkish for the change (or null).\n\n"
             "Strictly return ONLY the JSON block. Do not include markdown backticks or explanation."
         )},
@@ -614,6 +672,36 @@ async def chat_with_agent(payload: dict):
         await agent_coordinator.run_autonomous_scan_cycle()
         await database.add_agent_log("Decision", "Sohbet üzerinden manuel tarama tetiklendi", "Kullanıcı isteği üzerine anlık piyasa taraması başlatıldı.")
         action_status_msg = "\n[SİSTEM NOTU: Piyasa taraması başarıyla tamamlandı. Aşağıdaki veriler en güncel tarama sonuçlarını içerir.]"
+        
+    elif action == "update_restrictions":
+        block_stocks_down = intent.get("block_stocks_down")
+        block_commodities_down = intent.get("block_commodities_down")
+        trading_ban_enabled = intent.get("trading_ban_enabled")
+        trading_ban_start = intent.get("trading_ban_start")
+        trading_ban_end = intent.get("trading_ban_end")
+        
+        updates = []
+        if block_stocks_down is not None:
+            await database.update_setting("block_stocks_down", "true" if block_stocks_down else "false")
+            updates.append(f"Hisse DOWN engelleme={'AÇIK' if block_stocks_down else 'KAPALI'}")
+        if block_commodities_down is not None:
+            await database.update_setting("block_commodities_down", "true" if block_commodities_down else "false")
+            updates.append(f"Emtia (Altın, Gümüş, Petrol) DOWN engelleme={'AÇIK' if block_commodities_down else 'KAPALI'}")
+        if trading_ban_enabled is not None:
+            await database.update_setting("trading_ban_enabled", "true" if trading_ban_enabled else "false")
+            updates.append(f"Belirli saatlerde işlem yasağı={'AÇIK' if trading_ban_enabled else 'KAPALI'}")
+        if trading_ban_start is not None:
+            await database.update_setting("trading_ban_start", trading_ban_start)
+            updates.append(f"Yasak başlangıç saati={trading_ban_start}")
+        if trading_ban_end is not None:
+            await database.update_setting("trading_ban_end", trading_ban_end)
+            updates.append(f"Yasak bitiş saati={trading_ban_end}")
+            
+        desc = ", ".join(updates)
+        if not justification:
+            justification = f"Kullanıcı sohbet üzerinden kısıtlamaları güncelledi: {desc}"
+        await database.add_agent_log("Tuning", "Sohbet üzerinden işlem kısıtlamaları güncellendi", desc)
+        action_status_msg = f"\n[SİSTEM NOTU: İşlem kısıtlamaları başarıyla güncellendi: {desc}.]"
         
     # 3. Fetch database info for response
     try:
@@ -710,13 +798,31 @@ async def chat_with_agent(payload: dict):
     except Exception as stat_err:
         print(f"Failed to generate custom query stats: {stat_err}")
         
+    # Fetch current trading restrictions
+    try:
+        block_stocks_down = await database.get_setting("block_stocks_down") == "true"
+        block_commodities_down = await database.get_setting("block_commodities_down") == "true"
+        trading_ban_enabled = await database.get_setting("trading_ban_enabled") == "true"
+        trading_ban_start = await database.get_setting("trading_ban_start") or "22:00"
+        trading_ban_end = await database.get_setting("trading_ban_end") or "08:00"
+        
+        restrictions_str = (
+            f"- Hisse Senetlerinde DOWN Engellemesi: {'AKTİF (DOWN işlemleri yapılmaz)' if block_stocks_down else 'PASİF (Kısıtlama yok)'}\n"
+            f"- Emtialarda (Petrol, Altın, Gümüş) DOWN Engellemesi: {'AKTİF (DOWN işlemleri yapılmaz)' if block_commodities_down else 'PASİF (Kısıtlama yok)'}\n"
+            f"- Belli Saatlerde Genel İşlem Yasağı: {'AKTİF' if trading_ban_enabled else 'PASİF'} (Yasak Saatleri: {trading_ban_start} - {trading_ban_end} TRT)\n"
+        )
+    except Exception as e:
+        restrictions_str = "- İşlem kısıtlamaları alınamadı.\n"
+        
     system_prompt = (
         "Sen 'Antigravity' tarafından geliştirilmiş, Polymarket üzerinde çalışan yapay zeka tabanlı bir kantitatif algoritmasın (AI Quant Agent).\n"
         "Görevin, kullanıcının senin kararların, işlemlerin ve genel portföyün hakkında sorduğu sorulara yanıt vermek.\n\n"
         "Şu anki sistem durumun ve portföyün aşağıdadır:\n"
         f"- Aktif İşlem Modu: {trading_mode}\n"
-        f"- Risk Profilini Değiştirme ve Anlık Piyasa Taraması Yapabilme: Arayüz üzerinden veya kullanıcı doğrudan yazarak bunu tetikleyebilir.\n"
+        f"- Risk Profilini Değiştirme, İşlem Kısıtlamalarını Toggled/Sürelerini Güncelleyebilme ve Anlık Piyasa Taraması Yapabilme: Arayüz üzerinden veya kullanıcı doğrudan yazarak bunu tetikleyebilir.\n"
         f"- Risk Profili: {risk_profile}\n"
+        f"Mevcut İşlem Kısıtlamaları & Yasakları:\n"
+        f"{restrictions_str}\n"
         f"- Sanal Bakiye: ${v_bal:.2f} (Net Varlık/Equity: ${v_eq:.2f})\n"
         f"- Gerçek Bakiye: ${r_bal:.2f} (Net Varlık/Equity: ${r_eq:.2f})\n\n"
         f"Canlı Zaman Bağlamı:\n"

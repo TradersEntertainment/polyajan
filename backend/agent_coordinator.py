@@ -1016,6 +1016,38 @@ async def run_autonomous_scan_cycle():
     portfolio = await database.get_portfolio()
     total_capital = portfolio["equity"]
 
+    # Fetch trading restrictions from global_settings
+    block_stocks_down = await database.get_setting("block_stocks_down") == "true"
+    block_commodities_down = await database.get_setting("block_commodities_down") == "true"
+    
+    # Check general hour ban (Turkey Time)
+    is_trading_banned = False
+    ban_start_str = "22:00"
+    ban_end_str = "08:00"
+    trading_ban_enabled = await database.get_setting("trading_ban_enabled") == "true"
+    if trading_ban_enabled:
+        ban_start_str = await database.get_setting("trading_ban_start") or "22:00"
+        ban_end_str = await database.get_setting("trading_ban_end") or "08:00"
+        try:
+            tr_tz = pytz.timezone("Europe/Istanbul")
+            now_tr = datetime.now(tr_tz)
+            sh, sm = map(int, ban_start_str.split(":"))
+            eh, em = map(int, ban_end_str.split(":"))
+            ch, cm = now_tr.hour, now_tr.minute
+            
+            start_mins = sh * 60 + sm
+            end_mins = eh * 60 + em
+            curr_mins = ch * 60 + cm
+            
+            if start_mins <= end_mins:
+                if start_mins <= curr_mins <= end_mins:
+                    is_trading_banned = True
+            else:
+                if curr_mins >= start_mins or curr_mins <= end_mins:
+                    is_trading_banned = True
+        except Exception as ban_err:
+            logger.error(f"Error evaluating trading ban: {ban_err}")
+
     if trading_mode == "REAL":
         # Dynamic sizing/thresholds for Real account ($100 budget)
         # Strict user constraint: en kötü garanti %1 bulsun
@@ -1153,6 +1185,21 @@ async def run_autonomous_scan_cycle():
                 # Gather trade candidates for processing
                 token_id = m["up_token_id"] if direction == "UP" else m["down_token_id"]
                 trade_dir = f"OPEN_{direction}" if bet_type == "open" else direction
+                
+                # Check custom restrictions
+                if direction == "DOWN":
+                    is_stock = symbol in ["SPY", "PLTR", "TSLA", "NVDA", "AAPL", "AMZN", "META", "GOOGL", "MSFT", "NFLX", "COIN", "HOOD", "ABNB", "RKLB", "EWY", "MU"]
+                    is_commodity = any(c in symbol for c in ["WTI", "XAU", "XAG", "GOLD", "SILVER"])
+                    if is_stock and block_stocks_down:
+                        logger.info(f"AI Agent: Skipping trade candidate {symbol} {trade_dir} because Stock DOWN trading is blocked today.")
+                        continue
+                    if is_commodity and block_commodities_down:
+                        logger.info(f"AI Agent: Skipping trade candidate {symbol} {trade_dir} because Commodity DOWN trading is blocked today.")
+                        continue
+                        
+                if is_trading_banned:
+                    logger.info(f"AI Agent: Skipping trade candidate {symbol} {trade_dir} due to active trading ban hour restriction ({ban_start_str} - {ban_end_str} TRT).")
+                    continue
                 
                 # Turkey time check: 
                 tr_tz = pytz.timezone("Europe/Istanbul")

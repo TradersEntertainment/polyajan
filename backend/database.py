@@ -166,6 +166,33 @@ async def init_db():
                     VALUES (1000.0, 1000.0, $1)
                 """, now_str)
 
+            # Seed default trading restrictions settings
+            await conn.execute("""
+                INSERT INTO global_settings (key, value, updated_at)
+                VALUES ('block_stocks_down', 'false', $1)
+                ON CONFLICT (key) DO NOTHING
+            """, now_str)
+            await conn.execute("""
+                INSERT INTO global_settings (key, value, updated_at)
+                VALUES ('block_commodities_down', 'false', $1)
+                ON CONFLICT (key) DO NOTHING
+            """, now_str)
+            await conn.execute("""
+                INSERT INTO global_settings (key, value, updated_at)
+                VALUES ('trading_ban_enabled', 'false', $1)
+                ON CONFLICT (key) DO NOTHING
+            """, now_str)
+            await conn.execute("""
+                INSERT INTO global_settings (key, value, updated_at)
+                VALUES ('trading_ban_start', '22:00', $1)
+                ON CONFLICT (key) DO NOTHING
+            """, now_str)
+            await conn.execute("""
+                INSERT INTO global_settings (key, value, updated_at)
+                VALUES ('trading_ban_end', '08:00', $1)
+                ON CONFLICT (key) DO NOTHING
+            """, now_str)
+
 # --- Parameter Tuning Functions ---
 
 async def get_tuning(symbol: str, bet_type: str) -> dict:
