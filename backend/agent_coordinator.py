@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _position_sync_lock = asyncio.Lock()
+_scan_in_progress = False
 _active_markets_cache = None
 _active_markets_cache_time = 0.0
 
@@ -1124,6 +1125,18 @@ async def check_and_apply_stop_losses():
             logger.error(f"Error checking stop loss for trade {trade_id} ({symbol}): {e}", exc_info=True)
 
 async def run_autonomous_scan_cycle():
+    """Wrapper to prevent concurrent scanning cycles."""
+    global _scan_in_progress
+    if _scan_in_progress:
+        logger.warning("AI Agent: Autonomous scan cycle is already in progress. Skipping concurrent run.")
+        return
+    _scan_in_progress = True
+    try:
+        await _run_autonomous_scan_cycle_impl()
+    finally:
+        _scan_in_progress = False
+
+async def _run_autonomous_scan_cycle_impl():
     """Main scanning cycle to compare Polymarket prices vs historical Quant win-rates."""
     logger.info("AI Agent: Starting scanning cycle...")
     
@@ -1386,6 +1399,11 @@ async def run_autonomous_scan_cycle():
                     if remaining_budget < 2.0:
                         break
                     
+                    # Double-trade prevention: skip if symbol/direction was already opened in this scan run
+                    if (cand["symbol"], cand["direction"]) in active_positions:
+                        logger.info(f"AI Agent: Skipping candidate {cand['symbol']} {cand['direction']} (already in active_positions)")
+                        continue
+                    
                     # Check if it is a lottery bet (win probability below risk profile threshold)
                     is_lottery = cand.get("quant_probability", 1.0) < min_win_prob
                     
@@ -1421,6 +1439,7 @@ async def run_autonomous_scan_cycle():
                         if spent > 0.0:
                             remaining_budget -= spent
                             shares = spent / cand["entry_price"]
+                            active_positions.add((cand["symbol"], cand["direction"]))
                             await database.add_agent_log(
                                 "Decision",
                                 f"Gerçek İşlem Açıldı (Lottery Capped): {cand['symbol']} {cand['direction']}" if is_lottery else f"Gerçek İşlem Açıldı: {cand['symbol']} {cand['direction']}",
@@ -1444,6 +1463,11 @@ async def run_autonomous_scan_cycle():
         else:
             # Virtual trading mode logic (uses standard trade_size_usd per trade, but caps at remaining balance)
             for cand in new_candidates:
+                # Double-trade prevention: skip if symbol/direction was already opened in this scan run
+                if (cand["symbol"], cand["direction"]) in active_positions:
+                    logger.info(f"AI Agent: Skipping candidate {cand['symbol']} {cand['direction']} (already in active_positions)")
+                    continue
+
                 port = await database.get_portfolio()
                 balance = port["balance"]
                 equity = port["equity"]
@@ -1470,6 +1494,7 @@ async def run_autonomous_scan_cycle():
                 )
                 if spent > 0.0:
                     shares = spent / cand["entry_price"]
+                    active_positions.add((cand["symbol"], cand["direction"]))
                     await database.add_agent_log(
                         "Decision",
                         f"Sanal İşlem Açıldı: {cand['symbol']} {cand['direction']}",
