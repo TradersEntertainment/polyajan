@@ -997,6 +997,132 @@ async def resolve_virtual_trades():
     if resolved_any:
         await database.record_portfolio_history()
 
+async def check_and_apply_stop_losses():
+    """Evaluates open positions, re-runs risk/probability analysis, and closes positions (stop loss) if needed."""
+    logger.info("AI Agent: Running stop-loss and risk re-evaluation for open positions...")
+    open_trades = await database.get_open_virtual_trades()
+    if not open_trades:
+        return
+
+    import pyth_client
+    import backtester
+    
+    et_tz = pytz.timezone("US/Eastern")
+    now_et = datetime.now(et_tz)
+    total_minutes = now_et.hour * 60 + now_et.minute
+    
+    risk_profile = await database.get_risk_profile()
+    if risk_profile == "CONSERVATIVE":
+        stop_threshold = 0.45
+    elif risk_profile == "AGGRESSIVE":
+        stop_threshold = 0.30
+    else: # MODERATE
+        stop_threshold = 0.38
+
+    trading_mode = os.getenv("TRADING_MODE", "VIRTUAL").upper()
+
+    for t in open_trades:
+        trade_id = t["id"]
+        symbol = t["symbol"]
+        direction = t["direction"]
+        ref_price = t["ref_price"]
+        
+        # Skip OPEN_UP / OPEN_DOWN bets as they resolve at 9:30 AM open and don't change value intraday
+        if direction.startswith("OPEN_"):
+            continue
+
+        try:
+            pyth_id, full_symbol = pyth_client.get_pyth_id(symbol)
+            if not pyth_id:
+                continue
+                
+            current_price = await pyth_client.get_active_price(symbol, pyth_id)
+            if not current_price:
+                continue
+                
+            # Fetch actual yesterday's close reference
+            from_ts, to_ts = pyth_client.get_previous_close_times(symbol)
+            ref_price_yesterday = await pyth_client.get_historical_candle_price(
+                full_symbol, pyth_id, from_ts, to_ts, price_type='close'
+            )
+            if not ref_price_yesterday:
+                continue
+
+            # Check if the position is currently going against us (losing zone)
+            is_losing = False
+            if direction == "UP":
+                is_losing = (current_price < ref_price)
+            elif direction == "DOWN":
+                is_losing = (current_price > ref_price)
+
+            # Only re-evaluate if it's currently losing
+            if not is_losing:
+                continue
+
+            # Calculate minutes remaining to close
+            close_minutes = 1020 if any(c in symbol for c in ["WTI", "XAU", "XAG", "GOLD", "SILVER"]) else 960
+            minutes_to_close = max(0, close_minutes - total_minutes)
+
+            # Get active parameter tuning from DB
+            tuning = await database.get_tuning(symbol, "close")
+            lookback = tuning["lookback_days"]
+
+            # Determine if it is a strike bet vs close bet
+            # If the stored ref_price is significantly different from ref_price_yesterday, it's a strike price!
+            is_strike = abs((ref_price - ref_price_yesterday) / ref_price_yesterday) > 0.005 # > 0.5% difference
+            
+            if is_strike:
+                res = await backtester.backtest_strike_bet(
+                    symbol=symbol,
+                    current_price=current_price,
+                    ref_price=ref_price_yesterday,
+                    strike_price=ref_price,
+                    direction=direction,
+                    minutes_to_close=minutes_to_close,
+                    lookback_days=lookback
+                )
+            else:
+                res = await backtester.backtest_close_bet(
+                    symbol=symbol,
+                    current_price=current_price,
+                    ref_price=ref_price,
+                    direction=direction,
+                    minutes_to_close=minutes_to_close,
+                    lookback_days=lookback
+                )
+
+            if res.get("status") == "success":
+                quant_prob = res["win_rate"] / 100.0
+                
+                # Trigger Stop Loss if win probability drops below threshold
+                if quant_prob < stop_threshold:
+                    logger.warning(f"Stop Loss Triggered for {symbol} {direction} (Trade ID: {trade_id}): Prob {quant_prob:.2f} < Threshold {stop_threshold:.2f}")
+                    
+                    # Close position
+                    close_res = await database.close_trade_position(trade_id)
+                    if close_res.get("success"):
+                        msg = (
+                            f"🛑 <b>[STOP-LOSS / RİSK ÇIKIŞI ({trading_mode})]</b>\n\n"
+                            f"<b>Enstrüman:</b> {symbol}\n"
+                            f"<b>Yön:</b> {direction}\n"
+                            f"<b>Mevcut Fiyat:</b> ${current_price:.2f} (Sınır/Referans: ${ref_price:.2f})\n"
+                            f"<b>Yeni Kazanma İhtimali:</b> {quant_prob * 100:.1f}%\n"
+                            f"<b>Zarar Durdurma Eşiği:</b> {stop_threshold * 100:.0f}%\n"
+                            f"<b>Sonuç:</b> Pozisyon kapatıldı. {close_res.get('message', '')}"
+                        )
+                        await send_telegram_message(msg)
+                        
+                        await database.add_agent_log(
+                            "Decision",
+                            f"Stop Loss Tetiklendi: {symbol} {direction}",
+                            f"Mevcut fiyat ${current_price:.2f} sınırın/referansın (${ref_price:.2f}) tersine gitti.\n"
+                            f"Yeni hesaplanan kazanma ihtimali {quant_prob * 100:.1f}% limit eşiğin ({stop_threshold * 100:.0f}%) altında kaldığı için pozisyon durduruldu."
+                        )
+                    else:
+                        logger.error(f"Failed to execute stop loss closure for trade {trade_id}: {close_res.get('error')}")
+        except Exception as e:
+            logger.error(f"Error checking stop loss for trade {trade_id} ({symbol}): {e}", exc_info=True)
+
 async def run_autonomous_scan_cycle():
     """Main scanning cycle to compare Polymarket prices vs historical Quant win-rates."""
     logger.info("AI Agent: Starting scanning cycle...")
@@ -1006,6 +1132,9 @@ async def run_autonomous_scan_cycle():
     
     # 1b. Auto-detect and sync real Polymarket positions
     await auto_detect_clob_positions()
+    
+    # 1c. Check and apply stop-loss / risk re-evaluation
+    await check_and_apply_stop_losses()
     
     # 2. Archive active signals
     await database.archive_all_signals()
